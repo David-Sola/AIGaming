@@ -19,6 +19,9 @@ let physicsWorld = null;
 let vehicle = null;
 let vehicleVisual = null;
 let lastTime = performance.now();
+// Background sphere
+let skyboxSphere = null;
+let skyboxRotationSpeed = 0.0005; // Speed of rotation (adjust as needed)
 
 // Track keyboard input
 const keys = { 
@@ -44,7 +47,71 @@ window.addEventListener('keyup', (e) => {
 
 // Set up the scene, camera, and renderer
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+// We'll replace the simple background color with our skybox sphere
+// scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+
+// Function to create the skybox sphere
+function createSkyboxSphere() {
+    // Create a large sphere geometry
+    const geometry = new THREE.SphereGeometry(500, 60, 40);
+    // Important: Flip the geometry inside out so we see the texture from inside the sphere
+    geometry.scale(1, 1, 1);
+    
+    // Load the background texture with proper error handling
+    const textureLoader = new THREE.TextureLoader();
+    
+    // Add loading manager to track progress and errors
+    const loadingManager = new THREE.LoadingManager();
+    loadingManager.onError = function(url) {
+        console.error('Error loading texture:', url);
+    };
+    
+    textureLoader.manager = loadingManager;
+    
+    // Log loading progress
+    console.log("Loading background texture from: ./Background/BackgroundEnhanced.jpg");
+    
+    textureLoader.load(
+        './Background/BackgroundEnhanced.jpg', 
+        function(texture) {
+            // Success callback
+            console.log("Background texture loaded successfully");
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            
+            // Create material with the loaded texture
+            const material = new THREE.MeshBasicMaterial({
+                map: texture,
+                side: THREE.BackSide, // Render the inside of the sphere
+                color: 0x222222 // Add a dark gray tint to darken the texture
+            });
+            
+            // Create the skybox sphere mesh
+            skyboxSphere = new THREE.Mesh(geometry, material);
+            scene.add(skyboxSphere);
+            
+            console.log("Skybox sphere added to scene");
+        },
+        undefined, // Progress callback (not needed)
+        function(error) {
+            // Error callback
+            console.error("Error loading background texture:", error);
+            
+            // Create a fallback colored sphere as backup
+            const fallbackMaterial = new THREE.MeshBasicMaterial({
+                color: 0x87CEEB, // Sky blue
+                side: THREE.BackSide
+            });
+            
+            skyboxSphere = new THREE.Mesh(geometry, fallbackMaterial);
+            scene.add(skyboxSphere);
+            
+            console.log("Fallback skybox created due to texture loading error");
+        }
+    );
+}
+
+// Call createSkyboxSphere after scene setup
+createSkyboxSphere();
 
 // Add lighting
 const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -478,6 +545,11 @@ function updateCamera() {
 
 function animate() {
     requestAnimationFrame(animate);
+    
+    // Rotate the skybox sphere if it exists
+    if (skyboxSphere) {
+        skyboxSphere.rotation.y += skyboxRotationSpeed;
+    }
     
     if (gameStarted) {
         const time = performance.now();
