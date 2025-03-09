@@ -59,7 +59,7 @@ export class Vehicle {
         this.world = physicsWorld.world;
         
         // Adjusted force/brake values for smoother, more realistic driving
-        this.maxForce = 5500; // Lower max force so full power isn't applied instantly
+        this.maxForce = 7500; // Lower max force so full power isn't applied instantly
         this.maxSteerVal = 0.3;
         this.maxBrakeForce = 8000; // Reduced brake force for gradual deceleration
         
@@ -99,7 +99,7 @@ export class Vehicle {
         
         // Wheel options with settings tuned for smoother behavior
         const wheelOptions = {
-            radius: 0.5,
+            radius: 0.7,
             directionLocal: new CANNON.Vec3(0, -1, 0),
             suspensionStiffness: 30, // Reduced from 35 for smoother ride over undulating terrain
             suspensionRestLength: 0.4, // Increased from 0.3 for more suspension travel
@@ -259,10 +259,10 @@ export class Vehicle {
         engineForce = engineForce * slopeAdjustment;
         
         // Distribute the force with more to rear wheels for better traction
-        this.applyEngineForce(engineForce * 0.3, 0); // Front left
-        this.applyEngineForce(engineForce * 0.3, 1); // Front right
-        this.applyEngineForce(engineForce * 0.7, 2); // Rear left
-        this.applyEngineForce(engineForce * 0.7, 3); // Rear right
+        this.applyEngineForce(engineForce * 0.4, 0); // Front left
+        this.applyEngineForce(engineForce * 0.4, 1); // Front right
+        this.applyEngineForce(engineForce * 0.2, 2); // Rear left
+        this.applyEngineForce(engineForce * 0.2, 3); // Rear right
     }
     
     brake(force = this.maxBrakeForce) {

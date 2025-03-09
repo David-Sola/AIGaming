@@ -11,7 +11,7 @@ export const trackInfo = {
         top: -24.5,
         bottom: 24.5
     },
-    startPosition: new THREE.Vector3(0, 5.5, 14),
+    startPosition: new THREE.Vector3(0, 10.5, 14),
     startRotation: 0
 };
 
