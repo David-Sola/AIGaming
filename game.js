@@ -12,6 +12,40 @@ import { tracks, clearTrack } from './tracks/index.js';
 const gameState = new GameState();
 const networkManager = new NetworkManager(gameState);
 
+// Create the New AI World link
+function createNewAIWorldLink() {
+    const linkContainer = document.createElement('div');
+    linkContainer.style.position = 'fixed';
+    linkContainer.style.top = '20px';
+    linkContainer.style.left = '20px';
+    linkContainer.style.zIndex = '1000';
+    
+    const link = document.createElement('a');
+    link.href = 'https://newaiworld.com/';
+    link.target = '_blank'; // Open in new tab
+    link.textContent = 'New AI World';
+    link.style.color = '#ffffff';
+    link.style.textDecoration = 'none';
+    link.style.fontSize = '24px';
+    link.style.fontFamily = 'Arial, sans-serif';
+    link.style.textShadow = '2px 2px 4px rgba(0,0,0,0.5)';
+    link.style.transition = 'color 0.3s ease';
+    
+    // Hover effect
+    link.addEventListener('mouseover', () => {
+        link.style.color = '#00ff00';
+    });
+    link.addEventListener('mouseout', () => {
+        link.style.color = '#ffffff';
+    });
+    
+    linkContainer.appendChild(link);
+    document.body.appendChild(linkContainer);
+}
+
+// Call the function to create the link
+createNewAIWorldLink();
+
 // Game state
 let gameStarted = false;
 let currentTrack = null;
