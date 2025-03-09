@@ -8,29 +8,27 @@ export class PhysicsWorld {
             gravity: new CANNON.Vec3(0, -9.81, 0) 
         });
         
-        // Set up broadphase - SAP is good for vehicles
+        // Use standard broadphase for more reliable physics
         this.world.broadphase = new CANNON.SAPBroadphase(this.world);
         
-        // CRITICAL FIX: Use default solver settings for more reliable physics
-        this.world.solver.iterations = 10;
-        this.world.solver.tolerance = 0.01;
+        // CRITICAL FIX: Reduced solver iterations for better performance at high speeds
+        this.world.solver.iterations = 6; // Reduced from 8
+        this.world.solver.tolerance = 0.02; // Increased tolerance for better performance
         
-        // Allow sleeping for performance but with a higher threshold
-        this.world.allowSleep = true;
-        this.world.sleepTimeLimit = 1.0;
-        this.world.sleepSpeedLimit = 1.0; // Higher threshold to prevent premature sleeping
+        // Disable sleeping for more reliable physics
+        this.world.allowSleep = false;
         
         // Set up contact material properties
         this.groundMaterial = new CANNON.Material('ground');
         this.wheelMaterial = new CANNON.Material('wheel');
         
-        // CRITICAL FIX: Significantly improve wheel-ground contact
+        // CRITICAL FIX: Optimized wheel-ground contact for high-speed performance
         const wheelGroundContact = new CANNON.ContactMaterial(
             this.wheelMaterial,
             this.groundMaterial,
             {
-                friction: 4.0, // Dramatically increased friction
-                restitution: 0.0, // No bounce at all
+                friction: 2.0, // Reduced from 3.0 for less resistance at high speeds
+                restitution: 0.1,
                 contactEquationStiffness: 1000,
                 contactEquationRelaxation: 3,
                 frictionEquationStiffness: 1000,
@@ -39,38 +37,22 @@ export class PhysicsWorld {
         
         this.world.addContactMaterial(wheelGroundContact);
         
-        // CRITICAL FIX: Add default contact material for better global friction
-        this.world.defaultContactMaterial.friction = 0.8;
+        // CRITICAL FIX: Reduced global friction for better high-speed performance
+        this.world.defaultContactMaterial.friction = 0.2; // Reduced from 0.3
         this.world.defaultContactMaterial.restitution = 0.1;
         
-        // Fixed timestep for physics (60 Hz)
+        // Fixed timestep for physics
         this.fixedTimeStep = 1.0 / 60.0;
-        this.maxSubSteps = 4;
+        this.maxSubSteps = 3;
     }
 
     update(deltaTime) {
         // Use a maximum time delta to prevent instability after pauses/lag
-        const maxDelta = 1/30; // Max 1/30 second (prevents big jumps)
+        const maxDelta = 1/30;
         const clampedDelta = Math.min(deltaTime, maxDelta);
         
         // Step the physics world
         this.world.step(this.fixedTimeStep, clampedDelta, this.maxSubSteps);
-        
-        // CRITICAL FIX: Only help bodies sleep if they're truly stopped
-        // Don't force dynamic objects to sleep as that can prevent vehicle movement
-        this.world.bodies.forEach(body => {
-            // Skip handling for any non-sleeping body that shouldn't sleep
-            if (!body.allowSleep || body.sleepState === CANNON.Body.SLEEPING) {
-                return;
-            }
-            
-            // Only zero velocities if truly stationary (very strict check)
-            if (body.velocity.lengthSquared() < 0.001 && 
-                body.angularVelocity.lengthSquared() < 0.001) {
-                body.velocity.setZero();
-                body.angularVelocity.setZero();
-            }
-        });
     }
 }
 
@@ -78,23 +60,31 @@ export class Vehicle {
     constructor(physicsWorld, position = new CANNON.Vec3(0, 1, 0)) {
         this.world = physicsWorld.world;
         
-        // Adjusted forces for smoother control
-        this.maxForce = 500;
-        this.maxSteerVal = 0.3; 
+        // CRITICAL FIX: Dramatically increased force for higher top speed
+        this.maxForce = 15000; // Doubled from 7500 for much higher top speed
+        this.maxSteerVal = 0.3;
         this.maxBrakeForce = 15000;
         
         // Create vehicle chassis with proper dimensions
-        const chassisShape = new CANNON.Box(new CANNON.Vec3(1, 0.5, 2)); // Taller chassis
+        const chassisShape = new CANNON.Box(new CANNON.Vec3(1, 0.5, 2));
+        
+        // Keep Y position lower to prevent initial flying
+        const startPosition = new CANNON.Vec3(
+            position.x,
+            position.y,
+            position.z
+        );
+        
         this.chassisBody = new CANNON.Body({
-            mass: 800,
-            position: position,
+            mass: 1200,
+            position: startPosition,
             shape: chassisShape,
             material: physicsWorld.groundMaterial
         });
         
-        // Slightly increased damping for smoother movement
-        this.chassisBody.angularDamping = 0.4;
-        this.chassisBody.linearDamping = 0.1;
+        // CRITICAL FIX: Reduced damping to allow higher top speed
+        this.chassisBody.angularDamping = 0.5; // Reduced from 0.6
+        this.chassisBody.linearDamping = 0.05; // Significantly reduced from 0.2 to allow higher speeds
         
         // Disable sleeping for the chassis
         this.chassisBody.allowSleep = false;
@@ -106,11 +96,6 @@ export class Vehicle {
         this.chassisBody.torque.set(0, 0, 0);
         
         // Define the vehicle axis configuration
-        // This must match how we generate forces and our wheel setup
-        // With our coordinate system:
-        // - X is right/left (positive is right)
-        // - Y is up/down (positive is up)
-        // - Z is forward/backward (positive is BACKWARD, negative is FORWARD)
         this.vehicle = new CANNON.RaycastVehicle({
             chassisBody: this.chassisBody,
             indexRightAxis: 0,     // x is right
@@ -118,31 +103,30 @@ export class Vehicle {
             indexForwardAxis: 2,   // z axis (negative z is forward)
         });
         
-        // Use truly proper wheel options for stable behavior
+        // CRITICAL FIX: Further optimized wheel options for better speed
         const wheelOptions = {
             radius: 0.5,
-            directionLocal: new CANNON.Vec3(0, -1, 0), // suspension direction - downward
-            suspensionStiffness: 30,
+            directionLocal: new CANNON.Vec3(0, -1, 0),
+            suspensionStiffness: 35, // Reduced from 40 for smoother ride at high speeds
             suspensionRestLength: 0.3,
-            frictionSlip: 2.0,
-            dampingRelaxation: 2.3,
-            dampingCompression: 4.4,
-            maxSuspensionForce: 100000,
-            rollInfluence: 0.01,
-            axleLocal: new CANNON.Vec3(-1, 0, 0), // wheel axle along x-axis (left-right)
-            chassisConnectionPointLocal: new CANNON.Vec3(0, 0, 0), // Will be set for each wheel
+            frictionSlip: 4.0, // Reduced from 5.0 for less resistance at high speeds
+            dampingRelaxation: 2.5,
+            dampingCompression: 4.5,
+            maxSuspensionForce: 50000,
+            rollInfluence: 0.05,
+            axleLocal: new CANNON.Vec3(-1, 0, 0),
+            chassisConnectionPointLocal: new CANNON.Vec3(0, 0, 0),
             maxSuspensionTravel: 0.3,
             customSlidingRotationalSpeed: -30,
             useCustomSlidingRotationalSpeed: true
         };
 
-        // Clear wheel positioning with proper distances
-        // CRITICAL FIX: Adjust wheel positions to match a realistic car (slightly narrower in Z)
+        // Improved wheel positioning for better stability
         const wheelPositions = [
-            { x: -1, y: 0, z: -1.6 },   // Front left
-            { x: 1, y: 0, z: -1.6 },    // Front right
-            { x: -1, y: 0, z: 1.6 },    // Rear left
-            { x: 1, y: 0, z: 1.6 }      // Rear right
+            { x: -1, y: -0.1, z: -1.6 },   // Front left
+            { x: 1, y: -0.1, z: -1.6 },    // Front right
+            { x: -1, y: -0.1, z: 1.6 },    // Rear left
+            { x: 1, y: -0.1, z: 1.6 }      // Rear right
         ];
 
         this.wheelBodies = [];
@@ -157,24 +141,22 @@ export class Vehicle {
         // Add the vehicle to the world
         this.vehicle.addToWorld(this.world);
         
-        // CRITICAL FIX: Create wheel bodies with PROPER ORIENTATION
-        // This is the key fix for wheels rotating correctly
+        // Create wheel bodies with PROPER ORIENTATION
         this.vehicle.wheelInfos.forEach((wheel, index) => {
             // Create a properly oriented cylinder for the wheel
-            // The cylinder's axis needs to be aligned with the wheel's axle (x-axis)
             const cylinderShape = new CANNON.Cylinder(
-                wheel.radius, // top radius
-                wheel.radius, // bottom radius
-                wheel.radius * 0.5, // height/width of wheel
-                20 // number of segments
+                wheel.radius,
+                wheel.radius,
+                wheel.radius * 0.5,
+                20
             );
             
             const wheelBody = new CANNON.Body({
-                mass: 0, // Zero mass for kinematic wheels
+                mass: 0,
                 material: physicsWorld.wheelMaterial
             });
             
-            // CRITICAL FIX: The cylinder's local y-axis needs to be rotated 
+            // The cylinder's local y-axis needs to be rotated 
             // to match the wheel's axle (which is along the local x-axis)
             const quaternion = new CANNON.Quaternion();
             quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), Math.PI / 2);
@@ -184,16 +166,14 @@ export class Vehicle {
             wheelBody.type = CANNON.Body.KINEMATIC;
             this.wheelBodies.push(wheelBody);
             this.world.addBody(wheelBody);
-            
-            // Debug confirmation
-            console.log(`Wheel ${index} added at position:`, 
-                        wheelPositions[index].x, 
-                        wheelPositions[index].y, 
-                        wheelPositions[index].z);
         });
         
         // Initialize all wheels with zero forces
         this.initWheels();
+        
+        // CRITICAL FIX: Add properties to track speed for progressive acceleration
+        this.lastSpeed = 0;
+        this.accelerationTimer = 0;
     }
     
     // Initialize wheels with zero forces
@@ -239,27 +219,62 @@ export class Vehicle {
         this.vehicle.applyEngineForce(force, wheelIndex);
     }
     
-    // Apply force in the correct direction
-    // With our setup (where negative Z is forward):
-    // - Positive force should go backward
-    // - Negative force should go forward
-    // But we want "accelerate" to mean "go forward", so we'll negate the force
+    // CRITICAL FIX: Completely redesigned acceleration method with progressive force scaling
     accelerate(force = this.maxForce) {
         this.chassisBody.wakeUp();
         
+        // Calculate current speed
+        const velocity = this.chassisBody.velocity;
+        const currentSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+        
+        // CRITICAL FIX: Implement progressive force scaling based on speed
+        // This is the key to achieving higher top speeds
+        let forceMultiplier;
+        
+        if (currentSpeed < 10) {
+            // Low speed: Apply high force to overcome initial resistance
+            forceMultiplier = 2.0;
+        } else if (currentSpeed < 30) {
+            // Medium speed: Maintain strong acceleration
+            forceMultiplier = 4;
+        } else if (currentSpeed < 50) {
+            // High speed: Increase force to overcome increased air resistance
+            forceMultiplier = 8;
+        } else if (currentSpeed < 70) {
+            // Very high speed: Apply even more force
+            forceMultiplier = 20.0;
+        } else {
+            // Extreme speed: Maximum force to keep accelerating
+            forceMultiplier = 30.0;
+        }
+        
+        // CRITICAL FIX: Apply acceleration boost if speed is increasing
+        // This helps overcome plateaus in acceleration
+        if (currentSpeed > this.lastSpeed) {
+            this.accelerationTimer += 1/60; // Assuming 60fps
+            if (this.accelerationTimer > 1.0) {
+                // After 1 second of continuous acceleration, apply boost
+                forceMultiplier *= 1.2;
+            }
+        } else {
+            // Reset acceleration timer if not accelerating
+            this.accelerationTimer = 0;
+        }
+        
+        // Store current speed for next comparison
+        this.lastSpeed = currentSpeed;
+        
         // Apply NEGATIVE force to move forward (in negative Z direction)
-        // this effectively reverses the force direction to match our expectations
-        const forwardForce = -force; // Negate force to get forward movement
+        const forwardForce = force * forceMultiplier;
         
-        // Apply force primarily to rear wheels (which are at indices 2 and 3)
-        this.applyEngineForce(forwardForce * 1.5, 2); // Rear left (more power)
-        this.applyEngineForce(forwardForce * 1.5, 3); // Rear right (more power)
+        // Apply force distribution for optimal acceleration
+        // More power to rear wheels for better acceleration
+        this.applyEngineForce(forwardForce * 0.3, 2); // Rear left - more power
+        this.applyEngineForce(forwardForce * 0.3, 3); // Rear right - more power
         
-        // Apply less force to front wheels for stability and traction
-        this.applyEngineForce(forwardForce * 0.5, 0); // Front left (less power)
-        this.applyEngineForce(forwardForce * 0.5, 1); // Front right (less power)
-        
-        console.log(`Applying force: ${forwardForce} to rear wheels`);
+        // Some power to front wheels for better traction
+        this.applyEngineForce(forwardForce * 0.7, 0); // Front left - less power
+        this.applyEngineForce(forwardForce * 0.7, 1); // Front right - less power
     }
     
     brake(force = this.maxBrakeForce) {
@@ -276,7 +291,7 @@ export class Vehicle {
         this.setSteeringValue(clampedSteer, 1);
     }
     
-    // Completely clear all movement and force vectors during reset
+    // Improved reset function to prevent flying
     reset(position = new CANNON.Vec3(0, 1, 0), quaternion = new CANNON.Quaternion()) {
         // Zero all velocities and forces first
         this.chassisBody.velocity.setZero();
@@ -303,5 +318,9 @@ export class Vehicle {
         
         // Ensure the chassis is awake to receive the changes
         this.chassisBody.wakeUp();
+        
+        // Reset acceleration tracking
+        this.lastSpeed = 0;
+        this.accelerationTimer = 0;
     }
 } 

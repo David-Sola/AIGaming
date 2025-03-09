@@ -106,73 +106,83 @@ function createStraightTrack() {
     // Clear any existing track objects
     clearTrack();
     
-    // Create a straight track
-    const trackGeometry = new THREE.PlaneGeometry(10, 50);
-    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ color: 0x888888 }));
+    // CRITICAL FIX: Create a wider and longer track
+    const trackGeometry = new THREE.PlaneGeometry(20, 100); // Wider and longer
+    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ 
+        color: 0x666666, // Darker color
+        roughness: 0.8, // Add roughness for better visual indication of surface
+    }));
     trackObjects.track.rotation.x = -Math.PI / 2;
     trackObjects.track.receiveShadow = true;
     scene.add(trackObjects.track);
     
-    // Add track to physics world
-    const groundShape = new CANNON.Plane();
+    // CRITICAL FIX: Add track to physics world with proper dimensions and position
+    // Using a box instead of a plane for better collision detection
+    const groundShape = new CANNON.Box(new CANNON.Vec3(10, 0.1, 50)); // Half-extents
     const groundBody = new CANNON.Body({
-        mass: 0,
+        mass: 0, // Static body
         shape: groundShape,
-        material: physicsWorld.groundMaterial
+        material: physicsWorld.groundMaterial,
+        position: new CANNON.Vec3(0, -0.1, 0) // Slightly below y=0 to ensure good contact
     });
-    groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
     physicsWorld.world.addBody(groundBody);
     
+    // Add walls to prevent falling off the track
+    // Left wall
+    const leftWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
+    const leftWallBody = new CANNON.Body({
+        mass: 0,
+        shape: leftWallShape,
+        position: new CANNON.Vec3(-10.5, 1, 0)
+    });
+    physicsWorld.world.addBody(leftWallBody);
+    
+    // Right wall
+    const rightWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
+    const rightWallBody = new CANNON.Body({
+        mass: 0,
+        shape: rightWallShape,
+        position: new CANNON.Vec3(10.5, 1, 0)
+    });
+    physicsWorld.world.addBody(rightWallBody);
+    
     // Create start line
-    const startGeometry = new THREE.PlaneGeometry(10, 1);
+    const startGeometry = new THREE.PlaneGeometry(20, 1); // Match track width
     trackObjects.startLine = new THREE.Mesh(startGeometry, new THREE.MeshPhongMaterial({ color: 0x00ff00 }));
     trackObjects.startLine.rotation.x = -Math.PI / 2;
     trackObjects.startLine.position.z = 24;
-    trackObjects.startLine.position.y = 0.01;
+    trackObjects.startLine.position.y = 0.01; // Slightly above track to prevent z-fighting
     scene.add(trackObjects.startLine);
     
-    // Create finish line
-    const finishGeometry = new THREE.PlaneGeometry(10, 1);
-    trackObjects.finishLine = new THREE.Mesh(finishGeometry, new THREE.MeshPhongMaterial({ color: 0xff0000 }));
-    trackObjects.finishLine.rotation.x = -Math.PI / 2;
-    trackObjects.finishLine.position.z = -24;
-    trackObjects.finishLine.position.y = 0.01;
-    scene.add(trackObjects.finishLine);
+    // CRITICAL FIX: Create better visual walls to match the physics walls
+    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0xcccccc });
     
-    // Add barriers
-    const barrierGeometry = new THREE.BoxGeometry(0.5, 2, 50);
-    const barrierMaterial = new THREE.MeshPhongMaterial({ color: 0x993300 });
+    // Left wall visual
+    const leftWallGeometry = new THREE.BoxGeometry(1, 2, 100);
+    const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial);
+    leftWall.position.set(-10.5, 1, 0);
+    scene.add(leftWall);
+    trackObjects.barriers.push(leftWall);
     
-    // Left barrier
-    const leftBarrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
-    leftBarrier.position.set(-5.25, 1, 0);
-    scene.add(leftBarrier);
-    trackObjects.barriers.push(leftBarrier);
+    // Right wall visual
+    const rightWallGeometry = new THREE.BoxGeometry(1, 2, 100);
+    const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial);
+    rightWall.position.set(10.5, 1, 0);
+    scene.add(rightWall);
+    trackObjects.barriers.push(rightWall);
     
-    // Right barrier
-    const rightBarrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
-    rightBarrier.position.set(5.25, 1, 0);
-    scene.add(rightBarrier);
-    trackObjects.barriers.push(rightBarrier);
+    // Add directional markings on track to show direction
+    const arrowGeometry = new THREE.PlaneGeometry(5, 2);
+    const arrowMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
     
-    // Add barrier physics
-    const barrierShape = new CANNON.Box(new CANNON.Vec3(0.25, 1, 25));
-    
-    // Left barrier physics
-    const leftBarrierBody = new CANNON.Body({
-        mass: 0,
-        shape: barrierShape,
-        position: new CANNON.Vec3(-5.25, 1, 0)
-    });
-    physicsWorld.world.addBody(leftBarrierBody);
-    
-    // Right barrier physics
-    const rightBarrierBody = new CANNON.Body({
-        mass: 0,
-        shape: barrierShape,
-        position: new CANNON.Vec3(5.25, 1, 0)
-    });
-    physicsWorld.world.addBody(rightBarrierBody);
+    for (let z = 20; z >= -40; z -= 10) {
+        const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
+        arrow.rotation.x = -Math.PI / 2;
+        arrow.rotation.z = Math.PI; // Point in the forward direction
+        arrow.position.set(0, 0.02, z);
+        scene.add(arrow);
+        trackObjects.boundaries.push(arrow);
+    }
 }
 
 function createCircleTrack() {
@@ -364,52 +374,61 @@ function startGame(trackKey) {
     currentTrack = tracks[trackKey];
     currentTrack.create();
     
-    // CRITICAL FIX: Ensure vehicle starts above the ground to prevent collision issues
+    // CRITICAL FIX: Define a proper starting position
+    // For a straight track, start near the beginning with proper height
     const startPos = new CANNON.Vec3(
         currentTrack.startPosition.x,
-        currentTrack.startPosition.y + 1.0, // Significantly raised position
+        1.5, // Higher starting position to ensure no ground intersection
         currentTrack.startPosition.z
     );
     
-    // Create the vehicle
-    vehicle = new Vehicle(physicsWorld, startPos);
-    vehicleVisual = new VehicleVisual(scene);
-    
-    // Ensure the vehicle has the correct rotation based on track
-    if (currentTrack.startRotation !== undefined) {
-        const quaternion = new CANNON.Quaternion();
-        quaternion.setFromAxisAngle(
-            new CANNON.Vec3(0, 1, 0), // Y-axis rotation
-            currentTrack.startRotation
+    // CRITICAL FIX: Add a small delay to ensure the track is fully initialized
+    setTimeout(() => {
+        console.log("Creating vehicle at position:", startPos.x, startPos.y, startPos.z);
+        
+        // Create the vehicle
+        vehicle = new Vehicle(physicsWorld, startPos);
+        vehicleVisual = new VehicleVisual(scene);
+        
+        // Ensure the vehicle has the correct rotation based on track
+        if (currentTrack.startRotation !== undefined) {
+            const quaternion = new CANNON.Quaternion();
+            quaternion.setFromAxisAngle(
+                new CANNON.Vec3(0, 1, 0), // Y-axis rotation
+                currentTrack.startRotation
+            );
+            vehicle.chassisBody.quaternion.copy(quaternion);
+        }
+        
+        // CRITICAL FIX: Let the vehicle "settle" into position with high starting position
+        // Do multiple substeps to ensure it's in a stable position
+        for (let i = 0; i < 10; i++) {
+            physicsWorld.update(1/60);
+            vehicle.update();
+        }
+        
+        // CRITICAL FIX: Apply an initial brake to prevent rolling
+        vehicle.brake(vehicle.maxBrakeForce * 0.1);
+        
+        // Set up camera to look at the vehicle
+        const carPosition = vehicle.chassisBody.position;
+        camera.position.set(
+            carPosition.x, 
+            carPosition.y + 5, 
+            carPosition.z + 10 // Position behind the car
         );
-        vehicle.chassisBody.quaternion.copy(quaternion);
-    }
-    
-    // CRITICAL FIX: Let the vehicle "settle" into position
-    // Do multiple substeps to ensure it's in a stable position
-    for (let i = 0; i < 10; i++) {
-        physicsWorld.update(1/60);
-        vehicle.update();
-    }
-    
-    // CRITICAL FIX: Debug output of vehicle state
-    console.log("Vehicle initialized at:", 
-                vehicle.chassisBody.position.x.toFixed(2), 
-                vehicle.chassisBody.position.y.toFixed(2), 
-                vehicle.chassisBody.position.z.toFixed(2));
-    
-    // Set up camera to look at the vehicle
-    const carPosition = vehicle.chassisBody.position;
-    camera.position.set(
-        carPosition.x, 
-        carPosition.y + 5, 
-        carPosition.z + 10 // Position behind the car
-    );
-    camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
-    
-    // Start game
-    gameStarted = true;
-    lastTime = performance.now();
+        camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
+        
+        // Start game
+        gameStarted = true;
+        lastTime = performance.now();
+        
+        // Add a debug indicator to the console
+        console.log("GAME STARTED - Vehicle position:", 
+                    vehicle.chassisBody.position.x.toFixed(2),
+                    vehicle.chassisBody.position.y.toFixed(2),
+                    vehicle.chassisBody.position.z.toFixed(2));
+    }, 500); // 500ms delay
     
     // Remove menu if it exists
     const menuContainer = document.getElementById('menu-container');
@@ -451,56 +470,62 @@ function updateVehicle() {
         return;
     }
     
+    // CRITICAL FIX: Ensure we maintain Y position above ground
+    if (vehicle.chassisBody.position.y < 0.5) {
+        vehicle.chassisBody.position.y = 0.7;
+    }
+    
     // Correctly determine forward/backward movement
     // With negative Z being forward, vehicle is moving forward if Z velocity is negative
     const isMovingForward = velocity.z < 0;
     
-    // CRITICAL FIX: Use a more progressive starting force
+    // CRITICAL FIX: Apply much stronger and more immediate force
     if (accelerate) {
-        // Start with a very gentle force and ramp up
-        // This helps prevent jerky movement at start
-        let startForce;
-        
+        // CRITICAL FIX: Use a strong initial impulse when the car is not moving
         if (currentSpeed < 0.1) {
-            // Almost stopped - very gentle initial push
-            startForce = 0.1;
-        } else if (currentSpeed < 1) {
-            // Slowly building up - moderate force
-            startForce = 0.3;
-        } else if (currentSpeed < 5) {
-            // Moving at low speed - stronger force
-            startForce = 0.6;
+            // Apply a strong direct impulse to get the car moving
+            vehicle.chassisBody.applyImpulse(
+                new CANNON.Vec3(0, 0, -vehicle.maxForce * 0.1), // Impulse in negative Z (forward)
+                new CANNON.Vec3(0, 0, 0) // At center of mass
+            );
+            
+            // Also apply full engine force
+            vehicle.accelerate(vehicle.maxForce * 1.5); // 150% force for initial movement
+            
+            console.log("APPLIED IMPULSE TO START MOVING");
         } else {
-            // Moving at higher speed - full force
-            startForce = 1.0;
+            // Normal acceleration when already moving
+            const forceMultiplier = Math.max(0.5, Math.min(2.0, 5.0 / currentSpeed));
+            vehicle.accelerate(vehicle.maxForce * forceMultiplier);
         }
         
-        vehicle.accelerate(vehicle.maxForce * startForce);
         vehicle.brake(0); // Ensure brakes are off
         
-        // Log detailed acceleration info at very low speeds for debugging
-        if (currentSpeed < 0.5) {
-            console.log("Acceleration", 
-                        "Force:", (vehicle.maxForce * startForce).toFixed(2), 
-                        "Speed:", currentSpeed.toFixed(2), 
-                        "Z Velocity:", velocity.z.toFixed(2));
-        }
+        // Log acceleration info
+        console.log(`Accelerating - Speed: ${currentSpeed.toFixed(2)}, Z pos: ${vehicle.chassisBody.position.z.toFixed(2)}`);
     } else if (brake) {
-        // Handle braking & reverse in a smoother way
+        // Handle braking & reverse
         if (currentSpeed < 0.2) {
-            // At very low speed, apply reverse force very gently
-            vehicle.accelerate(-vehicle.maxForce * 0.2);
+            // At very low speed, apply reverse force and a backward impulse
+            vehicle.accelerate(-vehicle.maxForce);
+            
+            // Apply a small backward impulse to overcome initial resistance
+            if (Math.abs(velocity.z) < 0.1) {
+                vehicle.chassisBody.applyImpulse(
+                    new CANNON.Vec3(0, 0, vehicle.maxForce * 0.1), // Impulse in positive Z (backward)
+                    new CANNON.Vec3(0, 0, 0) // At center of mass
+                );
+            }
+            
             vehicle.brake(0);
         } else if (isMovingForward) {
-            // When moving forward, apply progressive braking
-            const brakeForce = Math.min(0.5, currentSpeed / 10);
+            // When moving forward, apply strong braking
             vehicle.accelerate(0);
-            vehicle.brake(vehicle.maxBrakeForce * brakeForce);
+            vehicle.brake(vehicle.maxBrakeForce * 0.7);
         } else {
-            // When moving backward, apply progressive braking
-            const brakeForce = Math.min(0.5, currentSpeed / 10);
+            // When moving backward, apply braking
             vehicle.accelerate(0);
-            vehicle.brake(vehicle.maxBrakeForce * brakeForce);
+            vehicle.brake(vehicle.maxBrakeForce * 0.5);
         }
     } else {
         // Coasting with minimal resistance
@@ -508,18 +533,15 @@ function updateVehicle() {
         
         // Very light drag when no controls are applied
         if (currentSpeed > 0.5) {
-            vehicle.brake(vehicle.maxBrakeForce * 0.01); // Almost no braking - just slight friction
+            vehicle.brake(vehicle.maxBrakeForce * 0.01); // Almost no braking
         } else if (currentSpeed > 0.1) {
-            // Apply slightly higher brake at very low speed to eventually stop
             vehicle.brake(vehicle.maxBrakeForce * 0.03);
         } else {
-            // Apply very light brake when essentially stopped
-            vehicle.brake(vehicle.maxBrakeForce * 0.05);
+            vehicle.brake(0); // No braking when stopped to prevent resistance to initial movement
         }
     }
     
-    // CRITICAL FIX: Smoother steering with progressive response
-    // Higher speed = less steering, more gradual response
+    // Smoother steering with progressive response
     const maxSpeedForFullSteering = 15;
     const steeringFactor = Math.max(0.3, 1 - (currentSpeed / maxSpeedForFullSteering));
     
