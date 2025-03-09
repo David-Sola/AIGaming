@@ -5,18 +5,45 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AIGaming Racing</title>
     <style>
-        body { margin: 0; overflow: hidden; }
-        canvas { display: block; }
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #gameCanvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        #timer {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+            display: none;
+        }
+        #debugInfo {
+            position: absolute;
+            top: 40px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            display: none;
+        }
     </style>
 </head>
 <body>
-    <div id="timer" style="position: absolute; top: 10px; left: 10px; color: white;"></div>
     <canvas id="gameCanvas"></canvas>
+    <div id="timer">Time: 0.00s</div>
+    <div id="debugInfo"></div>
     <script type="importmap">
         {
             "imports": {
-                "three": "./node_modules/three/build/three.module.js",
-                "cannon-es": "./node_modules/cannon-es/dist/cannon-es.js"
+                "three": "/node_modules/three/build/three.module.js",
+                "cannon-es": "/node_modules/cannon-es/dist/cannon-es.js"
             }
         }
     </script>

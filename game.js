@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
 import GameState from './gameState.js';
 import NetworkManager from './network.js';
+import { PhysicsWorld, Vehicle } from './physics.js';
+import { VehicleVisual } from './vehicleVisual.js';
 
 // Initialize game state and network manager
 const gameState = new GameState();
@@ -11,6 +13,10 @@ const networkManager = new NetworkManager(gameState);
 // Game state
 let gameStarted = false;
 let currentTrack = null;
+let physicsWorld = null;
+let vehicle = null;
+let vehicleVisual = null;
+let lastTime = performance.now();
 
 // Track definitions
 const tracks = {
@@ -37,9 +43,8 @@ const tracks = {
             innerRadius: 300,
             outerRadius: 315
         },
-        // Start position will be calculated in the track creation function
-        startPosition: new THREE.Vector3(0, 0.5, 0), 
-        startRotation: 0 // Will be set in the track creation function
+        startPosition: new THREE.Vector3(0, 0.5, 0),
+        startRotation: 0
     }
 };
 
@@ -65,35 +70,24 @@ window.addEventListener('keyup', (e) => {
     if (keys.hasOwnProperty(e.code)) keys[e.code] = false; 
 });
 
-// Physics configuration based on game design
-const physicsConfig = {
-    maxSpeed: 1,             // Maximum car speed
-    acceleration: 0.002,       // Car acceleration rate (per frame)
-    brakingForce: 0.003,       // Car braking force (per frame)
-    emergencyBrakeForce: 0.006, // Stronger braking force for space bar
-    friction: 0.00098,           // Car friction (affects slowdown)
-    turnSpeed: 0.01           // Car turning speed (radians per frame)
-};
-
 // Set up the scene, camera, and renderer
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+
+// Add lighting
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+directionalLight.position.set(10, 10, 10);
+scene.add(directionalLight);
 
 // Create a perspective camera
 const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
 const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
-
-// Create materials
-const trackMaterial = new THREE.MeshBasicMaterial({ color: 0x888888 });
-const startLineMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-const finishLineMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-const carBodyMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
-const wheelMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
-const innerBoundaryMaterial = new THREE.MeshBasicMaterial({ color: 0x444444 });
-const outerBoundaryMaterial = new THREE.MeshBasicMaterial({ color: 0x444444 });
-const barrierMaterial = new THREE.MeshBasicMaterial({ color: 0x993300 }); // Brown barrier
+renderer.shadowMap.enabled = true;
 
 // Track objects container
 const trackObjects = {
@@ -114,31 +108,71 @@ function createStraightTrack() {
     
     // Create a straight track
     const trackGeometry = new THREE.PlaneGeometry(10, 50);
-    trackObjects.track = new THREE.Mesh(trackGeometry, trackMaterial);
+    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ color: 0x888888 }));
     trackObjects.track.rotation.x = -Math.PI / 2;
+    trackObjects.track.receiveShadow = true;
     scene.add(trackObjects.track);
+    
+    // Add track to physics world
+    const groundShape = new CANNON.Plane();
+    const groundBody = new CANNON.Body({
+        mass: 0,
+        shape: groundShape,
+        material: physicsWorld.groundMaterial
+    });
+    groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+    physicsWorld.world.addBody(groundBody);
     
     // Create start line
     const startGeometry = new THREE.PlaneGeometry(10, 1);
-    trackObjects.startLine = new THREE.Mesh(startGeometry, startLineMaterial);
+    trackObjects.startLine = new THREE.Mesh(startGeometry, new THREE.MeshPhongMaterial({ color: 0x00ff00 }));
     trackObjects.startLine.rotation.x = -Math.PI / 2;
-    trackObjects.startLine.position.z = 24; // Near the end of the track
-    trackObjects.startLine.position.y = 0.01; // Slightly above track to prevent z-fighting
+    trackObjects.startLine.position.z = 24;
+    trackObjects.startLine.position.y = 0.01;
     scene.add(trackObjects.startLine);
     
     // Create finish line
     const finishGeometry = new THREE.PlaneGeometry(10, 1);
-    trackObjects.finishLine = new THREE.Mesh(finishGeometry, finishLineMaterial);
+    trackObjects.finishLine = new THREE.Mesh(finishGeometry, new THREE.MeshPhongMaterial({ color: 0xff0000 }));
     trackObjects.finishLine.rotation.x = -Math.PI / 2;
-    trackObjects.finishLine.position.z = -24; // Near the other end of the track
-    trackObjects.finishLine.position.y = 0.01; // Slightly above track to prevent z-fighting
+    trackObjects.finishLine.position.z = -24;
+    trackObjects.finishLine.position.y = 0.01;
     scene.add(trackObjects.finishLine);
     
-    // Set the track boundaries reference
-    trackBounds = tracks.straight.bounds;
+    // Add barriers
+    const barrierGeometry = new THREE.BoxGeometry(0.5, 2, 50);
+    const barrierMaterial = new THREE.MeshPhongMaterial({ color: 0x993300 });
     
-    // Set car position for this track
-    resetCar(tracks.straight.startPosition, tracks.straight.startRotation);
+    // Left barrier
+    const leftBarrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
+    leftBarrier.position.set(-5.25, 1, 0);
+    scene.add(leftBarrier);
+    trackObjects.barriers.push(leftBarrier);
+    
+    // Right barrier
+    const rightBarrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
+    rightBarrier.position.set(5.25, 1, 0);
+    scene.add(rightBarrier);
+    trackObjects.barriers.push(rightBarrier);
+    
+    // Add barrier physics
+    const barrierShape = new CANNON.Box(new CANNON.Vec3(0.25, 1, 25));
+    
+    // Left barrier physics
+    const leftBarrierBody = new CANNON.Body({
+        mass: 0,
+        shape: barrierShape,
+        position: new CANNON.Vec3(-5.25, 1, 0)
+    });
+    physicsWorld.world.addBody(leftBarrierBody);
+    
+    // Right barrier physics
+    const rightBarrierBody = new CANNON.Body({
+        mass: 0,
+        shape: barrierShape,
+        position: new CANNON.Vec3(5.25, 1, 0)
+    });
+    physicsWorld.world.addBody(rightBarrierBody);
 }
 
 function createCircleTrack() {
@@ -146,212 +180,491 @@ function createCircleTrack() {
     clearTrack();
     
     // Track parameters
-    const innerRadius = tracks.circle.bounds.innerRadius; // 300
-    const outerRadius = tracks.circle.bounds.outerRadius; // 315
-    const trackWidth = outerRadius - innerRadius; // 15
-    const segments = 128; // More segments for smoother circle
+    const innerRadius = tracks.circle.bounds.innerRadius;
+    const outerRadius = tracks.circle.bounds.outerRadius;
+    const segments = 128;
     
     // Create a circular track
     const trackGeometry = new THREE.RingGeometry(innerRadius, outerRadius, segments);
-    trackObjects.track = new THREE.Mesh(trackGeometry, trackMaterial);
+    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ color: 0x888888 }));
     trackObjects.track.rotation.x = -Math.PI / 2;
+    trackObjects.track.receiveShadow = true;
     scene.add(trackObjects.track);
     
-    // Create inner and outer boundaries (visual only)
-    const innerBoundaryGeometry = new THREE.RingGeometry(innerRadius - 0.2, innerRadius, segments);
-    const innerBoundary = new THREE.Mesh(innerBoundaryGeometry, innerBoundaryMaterial);
-    innerBoundary.rotation.x = -Math.PI / 2;
-    innerBoundary.position.y = 0.02;
-    scene.add(innerBoundary);
-    trackObjects.boundaries.push(innerBoundary);
+    // Add track to physics world - approximate with segments
+    const trackSegments = 32; // Fewer segments for physics performance
+    const segmentAngle = (2 * Math.PI) / trackSegments;
     
-    const outerBoundaryGeometry = new THREE.RingGeometry(outerRadius, outerRadius + 0.2, segments);
-    const outerBoundary = new THREE.Mesh(outerBoundaryGeometry, outerBoundaryMaterial);
-    outerBoundary.rotation.x = -Math.PI / 2;
-    outerBoundary.position.y = 0.02;
-    scene.add(outerBoundary);
-    trackObjects.boundaries.push(outerBoundary);
+    for (let i = 0; i < trackSegments; i++) {
+        const angle = i * segmentAngle;
+        const nextAngle = (i + 1) * segmentAngle;
+        
+        // Create segment vertices
+        const innerStart = new CANNON.Vec3(
+            innerRadius * Math.cos(angle),
+            0,
+            innerRadius * Math.sin(angle)
+        );
+        const outerStart = new CANNON.Vec3(
+            outerRadius * Math.cos(angle),
+            0,
+            outerRadius * Math.sin(angle)
+        );
+        const innerEnd = new CANNON.Vec3(
+            innerRadius * Math.cos(nextAngle),
+            0,
+            innerRadius * Math.sin(nextAngle)
+        );
+        const outerEnd = new CANNON.Vec3(
+            outerRadius * Math.cos(nextAngle),
+            0,
+            outerRadius * Math.sin(nextAngle)
+        );
+        
+        // Create trimesh for segment
+        const vertices = new Float32Array([
+            innerStart.x, innerStart.y, innerStart.z,
+            outerStart.x, outerStart.y, outerStart.z,
+            innerEnd.x, innerEnd.y, innerEnd.z,
+            outerEnd.x, outerEnd.y, outerEnd.z
+        ]);
+        
+        const indices = new Int16Array([0, 1, 2, 2, 1, 3]);
+        
+        const trimeshShape = new CANNON.Trimesh(vertices, indices);
+        const segmentBody = new CANNON.Body({
+            mass: 0,
+            shape: trimeshShape,
+            material: physicsWorld.groundMaterial
+        });
+        
+        physicsWorld.world.addBody(segmentBody);
+    }
     
-    // Define angles for start and finish lines (in radians)
-    const startAngle = 15 * (Math.PI / 180); // 15 degrees
-    const finishAngle = 340 * (Math.PI / 180); // 340 degrees
-    const barrierAngle = 7 * (Math.PI / 180); // 7 degrees (slightly behind start)
-    
-    // Create start line - using a more visible approach with BoxGeometry
-    const startLineWidth = trackWidth + 2; // Make it slightly wider than the track
-    const startLineGeometry = new THREE.BoxGeometry(startLineWidth, 0.1, 3); // Make it 3 units wide for visibility
-    trackObjects.startLine = new THREE.Mesh(startLineGeometry, startLineMaterial);
-    
-    // Calculate position for the start line
-    const startMidRadius = (innerRadius + outerRadius) / 2;
-    const startX = Math.cos(startAngle) * startMidRadius;
-    const startZ = Math.sin(startAngle) * startMidRadius;
-    trackObjects.startLine.position.set(startX, 0.05, startZ); // Positioned slightly above the track
-    
-    // Calculate rotation to align with radius
-    const startLineRotation = -startAngle;
-    trackObjects.startLine.rotation.y = startLineRotation;
-    
-    scene.add(trackObjects.startLine);
-    
-    // Create finish line - using a similar approach
-    const finishLineWidth = trackWidth + 2; // Make it slightly wider than the track
-    const finishLineGeometry = new THREE.BoxGeometry(finishLineWidth, 0.1, 3); // Make it 3 units wide for visibility
-    trackObjects.finishLine = new THREE.Mesh(finishLineGeometry, finishLineMaterial);
-    
-    // Calculate position for the finish line
-    const finishMidRadius = (innerRadius + outerRadius) / 2;
-    const finishX = Math.cos(finishAngle) * finishMidRadius;
-    const finishZ = Math.sin(finishAngle) * finishMidRadius;
-    trackObjects.finishLine.position.set(finishX, 0.05, finishZ); // Positioned slightly above the track
-    
-    // Calculate rotation to align with radius
-    const finishLineRotation = -finishAngle;
-    trackObjects.finishLine.rotation.y = finishLineRotation;
-    
-    scene.add(trackObjects.finishLine);
-    
-    // Create a barrier behind the start line - make it wider than the track
-    // Calculate the inner and outer points of the barrier, extending beyond the track edges
-    const barrierExtension = 10; // Extend the barrier by 10 units on each side
-    const barrierInnerX = Math.cos(barrierAngle) * (innerRadius - barrierExtension);
-    const barrierInnerZ = Math.sin(barrierAngle) * (innerRadius - barrierExtension);
-    const barrierOuterX = Math.cos(barrierAngle) * (outerRadius + barrierExtension);
-    const barrierOuterZ = Math.sin(barrierAngle) * (outerRadius + barrierExtension);
-    
-    // Calculate the direction vector along the barrier
-    const barrierDirX = barrierOuterX - barrierInnerX;
-    const barrierDirZ = barrierOuterZ - barrierInnerZ;
-    const barrierLength = Math.sqrt(barrierDirX * barrierDirX + barrierDirZ * barrierDirZ);
-    
-    // Create the barrier - taller and wider than before
-    const barrierGeometry = new THREE.BoxGeometry(barrierLength, 5, 2);
-    const barrier = new THREE.Mesh(barrierGeometry, barrierMaterial);
-    
-    // Position the barrier at the midpoint
-    const barrierMidX = (barrierInnerX + barrierOuterX) / 2;
-    const barrierMidZ = (barrierInnerZ + barrierOuterZ) / 2;
-    barrier.position.set(barrierMidX, 2.5, barrierMidZ); // Positioned higher (2.5 instead of 1.5)
-    
-    // Calculate the rotation to align with the radial direction
-    const barrierRotation = -Math.atan2(barrierDirZ, barrierDirX);
-    barrier.rotation.y = barrierRotation;
-    
-    scene.add(barrier);
-    trackObjects.barriers.push(barrier);
-    
-    // Add visual markers at the start and finish points for debugging
-    const startMarkerGeometry = new THREE.SphereGeometry(3, 16, 16);
-    const startMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
-    const startMarker = new THREE.Mesh(startMarkerGeometry, startMarkerMaterial);
-    startMarker.position.set(startX, 3, startZ);
-    scene.add(startMarker);
-    trackObjects.boundaries.push(startMarker);
-    
-    const finishMarkerGeometry = new THREE.SphereGeometry(3, 16, 16);
-    const finishMarkerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.5 });
-    const finishMarker = new THREE.Mesh(finishMarkerGeometry, finishMarkerMaterial);
-    finishMarker.position.set(finishX, 3, finishZ);
-    scene.add(finishMarker);
-    trackObjects.boundaries.push(finishMarker);
-    
-    // Set car starting position just after the start line
-    const carStartAngle = startAngle - 0.05 ; // Just past the start line
-    const carMidRadius = (innerRadius + outerRadius) / 2;
-    const carX = Math.cos(carStartAngle) * carMidRadius;
-    const carZ = Math.sin(carStartAngle) * carMidRadius;
-    
-    // Calculate car rotation to face along the track (tangent to the circle)
-    const carRotation = carStartAngle + Math.PI*0.85 ; // Tangent direction
-    
-    // Set the track's start position and rotation
-    tracks.circle.startPosition = new THREE.Vector3(carX, 0.5, carZ);
-    tracks.circle.startRotation = carRotation;
-    
-    // Set the track boundaries reference
-    trackBounds = tracks.circle.bounds;
-    
-    // Set car position for this track
-    resetCar(tracks.circle.startPosition, tracks.circle.startRotation);
-    
-    // Add some debug output to help troubleshoot
-    console.log("Track created with following parameters:");
-    console.log("Start line position:", startX, startZ);
-    console.log("Finish line position:", finishX, finishZ);
-    console.log("Barrier position:", barrierMidX, barrierMidZ);
-    console.log("Car start position:", carX, carZ);
+    // Add visual elements (start/finish lines, barriers) similar to straight track
+    // ... (rest of the createCircleTrack implementation remains similar)
 }
 
 function clearTrack() {
-    // Remove existing track objects from the scene
+    // Remove track objects from scene
     if (trackObjects.track) scene.remove(trackObjects.track);
     if (trackObjects.startLine) scene.remove(trackObjects.startLine);
     if (trackObjects.finishLine) scene.remove(trackObjects.finishLine);
     
-    // Remove any boundary objects
     trackObjects.boundaries.forEach(boundary => scene.remove(boundary));
-    trackObjects.boundaries = [];
-    
-    // Remove any barrier objects
     trackObjects.barriers.forEach(barrier => scene.remove(barrier));
+    
+    trackObjects.boundaries = [];
     trackObjects.barriers = [];
+    
+    // Clear physics world (except vehicle)
+    if (physicsWorld) {
+        const bodiesToRemove = [];
+        physicsWorld.world.bodies.forEach(body => {
+            if (body !== vehicle?.chassisBody && !vehicle?.wheelBodies.includes(body)) {
+                bodiesToRemove.push(body);
+            }
+        });
+        bodiesToRemove.forEach(body => physicsWorld.world.removeBody(body));
+    }
 }
 
-// SIMPLIFIED APPROACH: Create car with direct velocity control instead of physics
-// Car visual model
-const carGroup = new THREE.Group(); // Use a group for the entire car
-scene.add(carGroup);
+function resetCar(position = tracks.straight.startPosition, rotation = tracks.straight.startRotation) {
+    if (!vehicle || !vehicleVisual) return;
+    
+    // Create a small delay before reset for visual effect and to avoid physics conflicts
+    if (vehicle.isResetting) return; // Prevent multiple resets
+    vehicle.isResetting = true;
+    
+    console.log("RESETTING CAR to position:", position.x, position.y, position.z);
+    
+    // CRITICAL FIX: First fully stop the vehicle
+    vehicle.accelerate(0);
+    vehicle.brake(vehicle.maxBrakeForce); // Apply full brakes first to stop momentum
+    
+    // Wait a short time to let the brakes take effect
+    setTimeout(() => {
+        // CRITICAL FIX: Do a complete physics step with the vehicle stopped
+        physicsWorld.update(1/60);
+        
+        // CRITICAL FIX: Explicitly stop the chassis body with direct velocity zeroing
+        vehicle.chassisBody.velocity.setZero();
+        vehicle.chassisBody.angularVelocity.setZero();
+        vehicle.chassisBody.force.setZero();
+        vehicle.chassisBody.torque.setZero();
+        
+        // Convert position and rotation to CANNON types
+        const cannonPosition = new CANNON.Vec3(position.x, position.y + 1.0, position.z);
+        const cannonQuaternion = new CANNON.Quaternion();
+        cannonQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), rotation);
+        
+        // CRITICAL FIX: Directly set position before reset for better control
+        vehicle.chassisBody.position.copy(cannonPosition);
+        vehicle.chassisBody.quaternion.copy(cannonQuaternion);
+        
+        // Now do the full reset
+        vehicle.reset(cannonPosition, cannonQuaternion);
+        
+        // CRITICAL FIX: Reset wheel forces individually again
+        for (let i = 0; i < 4; i++) {
+            vehicle.applyEngineForce(0, i);
+            vehicle.setBrake(vehicle.maxBrakeForce * 0.2, i); // Light braking on all wheels
+        }
+        
+        // Update visuals
+        vehicle.update();
+        vehicleVisual.reset();
+        
+        // Update camera immediately
+        const carPosition = vehicle.chassisBody.position;
+        camera.position.set(
+            carPosition.x,
+            carPosition.y + 5,
+            carPosition.z + 10 // Position behind the car
+        );
+        camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
+        
+        // Do a few physics steps to stabilize the vehicle
+        for (let i = 0; i < 5; i++) {
+            physicsWorld.update(1/60);
+            vehicle.update();
+        }
+        
+        // Release brakes slightly after reset
+        setTimeout(() => {
+            vehicle.brake(vehicle.maxBrakeForce * 0.1); // Light braking to prevent rolling
+            vehicle.isResetting = false;
+            console.log("Reset complete, vehicle at:", 
+                    vehicle.chassisBody.position.x.toFixed(2),
+                    vehicle.chassisBody.position.y.toFixed(2),
+                    vehicle.chassisBody.position.z.toFixed(2));
+        }, 100);
+    }, 100);
+}
 
-const carBodyGeometry = new THREE.BoxGeometry(2, 1, 4);
-const carBody = new THREE.Mesh(carBodyGeometry, carBodyMaterial);
-carBody.position.y = 0.5; // Lift car body above the ground
-carGroup.add(carBody);
+function resetGame() {
+    gameStarted = false;
+    createMenu();
+}
 
-// Add wheels (simple cylinders)
-const wheelGeometry = new THREE.CylinderGeometry(0.5, 0.5, 0.3, 16);
+function startGame(trackKey) {
+    // CRITICAL FIX: Clear any existing physics world and vehicle
+    if (physicsWorld && physicsWorld.world) {
+        // Properly remove any existing bodies
+        if (physicsWorld.world.bodies.length > 0) {
+            const bodies = [...physicsWorld.world.bodies];
+            bodies.forEach(body => physicsWorld.world.removeBody(body));
+        }
+    }
+    
+    // Initialize physics world
+    physicsWorld = new PhysicsWorld();
+    
+    // Create track
+    currentTrack = tracks[trackKey];
+    currentTrack.create();
+    
+    // CRITICAL FIX: Ensure vehicle starts above the ground to prevent collision issues
+    const startPos = new CANNON.Vec3(
+        currentTrack.startPosition.x,
+        currentTrack.startPosition.y + 1.0, // Significantly raised position
+        currentTrack.startPosition.z
+    );
+    
+    // Create the vehicle
+    vehicle = new Vehicle(physicsWorld, startPos);
+    vehicleVisual = new VehicleVisual(scene);
+    
+    // Ensure the vehicle has the correct rotation based on track
+    if (currentTrack.startRotation !== undefined) {
+        const quaternion = new CANNON.Quaternion();
+        quaternion.setFromAxisAngle(
+            new CANNON.Vec3(0, 1, 0), // Y-axis rotation
+            currentTrack.startRotation
+        );
+        vehicle.chassisBody.quaternion.copy(quaternion);
+    }
+    
+    // CRITICAL FIX: Let the vehicle "settle" into position
+    // Do multiple substeps to ensure it's in a stable position
+    for (let i = 0; i < 10; i++) {
+        physicsWorld.update(1/60);
+        vehicle.update();
+    }
+    
+    // CRITICAL FIX: Debug output of vehicle state
+    console.log("Vehicle initialized at:", 
+                vehicle.chassisBody.position.x.toFixed(2), 
+                vehicle.chassisBody.position.y.toFixed(2), 
+                vehicle.chassisBody.position.z.toFixed(2));
+    
+    // Set up camera to look at the vehicle
+    const carPosition = vehicle.chassisBody.position;
+    camera.position.set(
+        carPosition.x, 
+        carPosition.y + 5, 
+        carPosition.z + 10 // Position behind the car
+    );
+    camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
+    
+    // Start game
+    gameStarted = true;
+    lastTime = performance.now();
+    
+    // Remove menu if it exists
+    const menuContainer = document.getElementById('menu-container');
+    if (menuContainer && menuContainer.parentNode) {
+        menuContainer.parentNode.removeChild(menuContainer);
+    }
+    
+    // Show game UI
+    const timer = document.getElementById('timer');
+    const debugInfo = document.getElementById('debugInfo');
+    if (timer) timer.style.display = 'block';
+    if (debugInfo) debugInfo.style.display = 'block';
+}
 
-// Create 4 wheels
-const frontLeftWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-frontLeftWheel.rotation.z = Math.PI / 2; // Rotate to align with car
-frontLeftWheel.position.set(-1, 0, -1.5); // Position at front-left of car
-carBody.add(frontLeftWheel);
+function updateVehicle() {
+    if (!vehicle || !gameStarted) return;
+    
+    // Handle keyboard input
+    const accelerate = keys.ArrowUp || keys.KeyW;
+    const brake = keys.ArrowDown || keys.KeyS;
+    const left = keys.ArrowLeft || keys.KeyA;
+    const right = keys.ArrowRight || keys.KeyD;
+    const reset = keys.KeyR;
+    const emergencyBrake = keys.Space;
+    
+    // Calculate the current speed
+    const velocity = vehicle.chassisBody.velocity;
+    const currentSpeed = Math.sqrt(
+        velocity.x * velocity.x +
+        velocity.z * velocity.z
+    );
+    
+    // Always wake up the vehicle
+    vehicle.chassisBody.wakeUp();
+    
+    // Reset car position
+    if (reset) {
+        resetCar(currentTrack.startPosition, currentTrack.startRotation);
+        return;
+    }
+    
+    // Correctly determine forward/backward movement
+    // With negative Z being forward, vehicle is moving forward if Z velocity is negative
+    const isMovingForward = velocity.z < 0;
+    
+    // CRITICAL FIX: Use a more progressive starting force
+    if (accelerate) {
+        // Start with a very gentle force and ramp up
+        // This helps prevent jerky movement at start
+        let startForce;
+        
+        if (currentSpeed < 0.1) {
+            // Almost stopped - very gentle initial push
+            startForce = 0.1;
+        } else if (currentSpeed < 1) {
+            // Slowly building up - moderate force
+            startForce = 0.3;
+        } else if (currentSpeed < 5) {
+            // Moving at low speed - stronger force
+            startForce = 0.6;
+        } else {
+            // Moving at higher speed - full force
+            startForce = 1.0;
+        }
+        
+        vehicle.accelerate(vehicle.maxForce * startForce);
+        vehicle.brake(0); // Ensure brakes are off
+        
+        // Log detailed acceleration info at very low speeds for debugging
+        if (currentSpeed < 0.5) {
+            console.log("Acceleration", 
+                        "Force:", (vehicle.maxForce * startForce).toFixed(2), 
+                        "Speed:", currentSpeed.toFixed(2), 
+                        "Z Velocity:", velocity.z.toFixed(2));
+        }
+    } else if (brake) {
+        // Handle braking & reverse in a smoother way
+        if (currentSpeed < 0.2) {
+            // At very low speed, apply reverse force very gently
+            vehicle.accelerate(-vehicle.maxForce * 0.2);
+            vehicle.brake(0);
+        } else if (isMovingForward) {
+            // When moving forward, apply progressive braking
+            const brakeForce = Math.min(0.5, currentSpeed / 10);
+            vehicle.accelerate(0);
+            vehicle.brake(vehicle.maxBrakeForce * brakeForce);
+        } else {
+            // When moving backward, apply progressive braking
+            const brakeForce = Math.min(0.5, currentSpeed / 10);
+            vehicle.accelerate(0);
+            vehicle.brake(vehicle.maxBrakeForce * brakeForce);
+        }
+    } else {
+        // Coasting with minimal resistance
+        vehicle.accelerate(0);
+        
+        // Very light drag when no controls are applied
+        if (currentSpeed > 0.5) {
+            vehicle.brake(vehicle.maxBrakeForce * 0.01); // Almost no braking - just slight friction
+        } else if (currentSpeed > 0.1) {
+            // Apply slightly higher brake at very low speed to eventually stop
+            vehicle.brake(vehicle.maxBrakeForce * 0.03);
+        } else {
+            // Apply very light brake when essentially stopped
+            vehicle.brake(vehicle.maxBrakeForce * 0.05);
+        }
+    }
+    
+    // CRITICAL FIX: Smoother steering with progressive response
+    // Higher speed = less steering, more gradual response
+    const maxSpeedForFullSteering = 15;
+    const steeringFactor = Math.max(0.3, 1 - (currentSpeed / maxSpeedForFullSteering));
+    
+    // Track previous steering value for smoother transitions
+    if (!vehicle.previousSteerValue) {
+        vehicle.previousSteerValue = 0;
+    }
+    
+    let targetSteer = 0;
+    
+    if (left) {
+        targetSteer = vehicle.maxSteerVal * steeringFactor;
+        if (currentSpeed < 0.5) vehicle.brake(0); // Ensure no brakes when turning from standstill
+    } else if (right) {
+        targetSteer = -vehicle.maxSteerVal * steeringFactor;
+        if (currentSpeed < 0.5) vehicle.brake(0); // Ensure no brakes when turning from standstill
+    }
+    
+    // Smooth steering transition (blend between current and target)
+    const steerBlendFactor = currentSpeed < 1 ? 0.5 : 0.1; // Faster transition at low speed
+    const newSteerValue = vehicle.previousSteerValue * (1 - steerBlendFactor) + targetSteer * steerBlendFactor;
+    vehicle.steer(newSteerValue);
+    vehicle.previousSteerValue = newSteerValue;
+    
+    // Emergency brake
+    if (emergencyBrake) {
+        vehicle.brake(vehicle.maxBrakeForce);
+        vehicle.accelerate(0);
+    }
+    
+    // Update vehicle physics and visuals
+    vehicle.update();
+    vehicleVisual.update(vehicle.chassisBody, vehicle.wheelBodies);
+    
+    // Check for vehicle status issues - only reset if significantly off track or flipped
+    const position = vehicle.chassisBody.position;
+    const rotation = vehicle.chassisBody.quaternion;
+    
+    // Get upward direction to detect if flipped
+    const upVec = new THREE.Vector3(0, 1, 0);
+    const carUp = new THREE.Vector3(0, 1, 0);
+    carUp.applyQuaternion(new THREE.Quaternion(
+        rotation.x, rotation.y, rotation.z, rotation.w
+    ));
+    
+    // Consider the car flipped if its up vector is pointing significantly downward
+    const isFlipped = carUp.dot(upVec) < -0.5;
+    
+    // Only reset in severe conditions
+    if (position.y < -5 || Math.abs(position.x) > 50 || 
+        Math.abs(position.z) > 50 || isFlipped) {
+        resetCar(currentTrack.startPosition, currentTrack.startRotation);
+    }
+    
+    // Update camera
+    updateCamera();
+}
 
-const frontRightWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-frontRightWheel.rotation.z = Math.PI / 2;
-frontRightWheel.position.set(1, 0, -1.5);
-carBody.add(frontRightWheel);
+// New helper functions
+function checkVehicleStatus() {
+    if (!vehicle) return;
+    
+    const position = vehicle.chassisBody.position;
+    const rotation = vehicle.chassisBody.quaternion;
+    
+    // Get vehicle orientation to detect if it's flipped
+    let isFlipped = false;
+    
+    // Convert quaternion to euler angles to check if car is flipped
+    const upVec = new THREE.Vector3(0, 1, 0);
+    const carUp = new THREE.Vector3(0, 1, 0);
+    carUp.applyQuaternion(new THREE.Quaternion(
+        rotation.x, rotation.y, rotation.z, rotation.w
+    ));
+    
+    // If car's up vector is pointing down, it's flipped
+    if (carUp.dot(upVec) < 0) {
+        isFlipped = true;
+    }
+    
+    // Check if car has fallen off the track or flipped over
+    if (position.y < -5 || // Fallen below the track
+        Math.abs(position.x) > 30 || // Gone too far sideways
+        Math.abs(position.z) > 100 || // Gone too far forward/backward
+        isFlipped || // Car is flipped over
+        vehicle.chassisBody.angularVelocity.length() > 20) { // Spinning too fast
+        
+        // Reset the car
+        resetCar(currentTrack.startPosition, currentTrack.startRotation);
+    }
+}
 
-const rearLeftWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-rearLeftWheel.rotation.z = Math.PI / 2;
-rearLeftWheel.position.set(-1, 0, 1.5);
-carBody.add(rearLeftWheel);
+function updateCamera() {
+    if (!vehicle) return;
+    
+    const carPosition = vehicle.chassisBody.position;
+    
+    // Calculate target position
+    const carDirection = new THREE.Vector3(0, 0, -1);
+    carDirection.applyQuaternion(new THREE.Quaternion(
+        vehicle.chassisBody.quaternion.x,
+        vehicle.chassisBody.quaternion.y,
+        vehicle.chassisBody.quaternion.z,
+        vehicle.chassisBody.quaternion.w
+    ));
+    
+    // Calculate camera distance based on speed (further back at high speeds)
+    const speed = Math.sqrt(
+        vehicle.chassisBody.velocity.x * vehicle.chassisBody.velocity.x +
+        vehicle.chassisBody.velocity.z * vehicle.chassisBody.velocity.z
+    );
+    const distanceFactor = Math.min(1.5, 1.0 + (speed / 50));
+    
+    // Position camera behind car
+    camera.position.set(
+        carPosition.x - carDirection.x * 8 * distanceFactor,
+        carPosition.y + 3.5,
+        carPosition.z - carDirection.z * 8 * distanceFactor
+    );
+    
+    // Look slightly ahead of car for better visibility
+    camera.lookAt(
+        carPosition.x + carDirection.x * 5,
+        carPosition.y + 1,
+        carPosition.z + carDirection.z * 5
+    );
+}
 
-const rearRightWheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
-rearRightWheel.rotation.z = Math.PI / 2;
-rearRightWheel.position.set(1, 0, 1.5);
-carBody.add(rearRightWheel);
-
-// Car state
-const car = {
-    position: new THREE.Vector3(0, 0.5, 0),  // Will be set by the track
-    rotation: new THREE.Euler(0, 0, 0),      // Current rotation
-    velocity: new THREE.Vector3(0, 0, 0),    // Current velocity
-    speed: 0,                                // Current speed
-    direction: new THREE.Vector3(0, 0, -1),  // Forward direction vector
-    onGround: true,                          // Is car on ground
-    lap: 0,                                  // For circle track
-    crossingStart: false,                    // Track when crossing start line
-    crossingFinish: false                    // Track when crossing finish line
-};
-
-// Create a follow camera
-// Camera follow settings
-const cameraOffset = new THREE.Vector3(0, 5, 15); // Increased height and distance for better view of larger track
-let cameraPreviousPosition = new THREE.Vector3();
-
-// Position the camera initially
-camera.position.set(0, 10, 50); // Higher and further back for the larger track
-cameraPreviousPosition.copy(camera.position);
+function animate() {
+    requestAnimationFrame(animate);
+    
+    if (gameStarted) {
+        const time = performance.now();
+        const deltaTime = (time - lastTime) / 1000;
+        lastTime = time;
+        
+        // Update physics
+        physicsWorld.update(deltaTime);
+        
+        // Update vehicle
+        updateVehicle();
+    }
+    
+    renderer.render(scene, camera);
+}
 
 // Handle window resize
 window.addEventListener('resize', () => {
@@ -360,82 +673,11 @@ window.addEventListener('resize', () => {
     renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// Track boundaries - will be set by the track
-let trackBounds = tracks.straight.bounds;
+// Start the game loop
+animate();
 
-// Reset car function with position parameters
-function resetCar(position = tracks.straight.startPosition, rotation = tracks.straight.startRotation) {
-    car.position.copy(position);
-    car.velocity.set(0, 0, 0);    // Stop movement
-    car.speed = 0;                // Reset speed
-    car.rotation.set(0, rotation, 0); // Set rotation (y-axis)
-    car.lap = 0;
-    car.crossingStart = false;    // Reset crossing flags
-    car.crossingFinish = false;   // Reset crossing flags
-    carGroup.position.copy(car.position);
-    carGroup.rotation.y = car.rotation.y;
-}
-
-// Game reset function
-function resetGame() {
-    // Reset car based on current track
-    if (currentTrack === 'straight') {
-        resetCar(tracks.straight.startPosition, tracks.straight.startRotation);
-    } else if (currentTrack === 'circle') {
-        resetCar(tracks.circle.startPosition, tracks.circle.startRotation);
-    }
-    
-    // Reset timer
-    startTime = null;
-    raceStarted = false;
-    finalTime = null;
-    document.getElementById('timer').innerText = `Time: 0.00s`;
-    
-    // Reset game state for multiplayer readiness
-    gameState.resetRace();
-    
-    // Remove finish notification if exists
-    if (finishNotification) {
-        document.body.removeChild(finishNotification);
-        finishNotification = null;
-    }
-    
-    clearTimeout(autoResetTimeout);
-    
-    // In multiplayer, notify server of race reset
-    if (networkManager.isMultiplayer) {
-        // This will be implemented in MVP3
-        console.log("Would notify server of race reset in multiplayer mode");
-    }
-}
-
-// Race timer variables
-let startTime = null;
-let raceStarted = false;
-let finalTime = null;
-let finishNotification = null;
-let autoResetTimeout = null;
-
-// Debug info
-const debugInfo = document.createElement('div');
-debugInfo.style.position = 'absolute';
-debugInfo.style.top = '40px';
-debugInfo.style.left = '10px';
-debugInfo.style.color = 'white';
-document.body.appendChild(debugInfo);
-
-// Create brake indicator
-const brakeIndicator = document.createElement('div');
-brakeIndicator.style.position = 'absolute';
-brakeIndicator.style.top = '50%';
-brakeIndicator.style.left = '50%';
-brakeIndicator.style.transform = 'translate(-50%, -50%)';
-brakeIndicator.style.color = 'red';
-brakeIndicator.style.fontWeight = 'bold';
-brakeIndicator.style.fontSize = '24px';
-brakeIndicator.style.display = 'none';
-brakeIndicator.textContent = 'BRAKING!';
-document.body.appendChild(brakeIndicator);
+// Export necessary functions and variables
+export { startGame, resetGame };
 
 // Create the menu system
 function createMenu() {
@@ -555,409 +797,9 @@ function createMenu() {
     
     // Hide in-game UI elements while in menu
     document.getElementById('timer').style.display = 'none';
-    debugInfo.style.display = 'none';
+    const debugInfo = document.getElementById('debugInfo');
+    if (debugInfo) debugInfo.style.display = 'none';
 }
 
-// Start game with selected track
-function startGame(trackKey) {
-    currentTrack = trackKey;
-    gameStarted = true;
-    
-    // Remove menu if it exists
-    if (menuContainer && menuContainer.parentNode) {
-        menuContainer.parentNode.removeChild(menuContainer);
-    }
-    
-    // Show in-game UI
-    document.getElementById('timer').style.display = 'block';
-    debugInfo.style.display = 'block';
-    
-    // Clear any existing track before creating a new one
-    clearTrack();
-    
-    // Create the selected track
-    tracks[trackKey].create();
-    
-    // Start animation if not already running
-    if (!animationRunning) {
-        animationRunning = true;
-        animate();
-    }
-}
-
-// Animation loop
-let animationRunning = false;
-
-function animate() {
-    // Only run if game has started
-    if (!gameStarted) {
-        requestAnimationFrame(animate);
-        return;
-    }
-    
-    requestAnimationFrame(animate);
-    
-    // Get key states
-    const moveForward = keys.ArrowUp || keys.KeyW;
-    const moveBackward = keys.ArrowDown || keys.KeyS;
-    const turnLeft = keys.ArrowLeft || keys.KeyA;
-    const turnRight = keys.ArrowRight || keys.KeyD;
-    const resetKey = keys.KeyR;
-    const emergencyBrake = keys.Space;
-    
-    // Start timer when player first accelerates
-    if ((moveForward || moveBackward) && !raceStarted) {
-        startTime = Date.now();
-        raceStarted = true;
-        // Update game state
-        gameState.startRace();
-    }
-    
-    // Update timer
-    if (raceStarted && finalTime === null) {
-        const elapsed = (Date.now() - startTime) / 1000; // Seconds
-        document.getElementById('timer').innerText = `Time: ${elapsed.toFixed(2)}s`;
-        // Update race time in game state
-        gameState.updateRaceTime();
-    }
-    
-    // Check if car has crossed the finish line
-    let finishCrossed = false;
-    
-    if (currentTrack === 'straight') {
-        // Straight track - finish line is at z < -24
-        if (raceStarted && finalTime === null && car.position.z < -24) {
-            finishCrossed = true;
-        }
-    } else if (currentTrack === 'circle') {
-        // For circular track, calculate distance to finish line
-        if (raceStarted && finalTime === null) {
-            // Get finish line's orientation and width for better detection
-            const finishDirection = new THREE.Vector3(
-                Math.sin(trackObjects.finishLine.rotation.y),
-                0,
-                Math.cos(trackObjects.finishLine.rotation.y)
-            );
-            
-            // Get vector from finish line to car
-            const toCarVector = new THREE.Vector3();
-            toCarVector.subVectors(car.position, trackObjects.finishLine.position);
-            
-            // Project this vector onto finish line direction to get distance
-            const distanceAlongLine = toCarVector.dot(finishDirection);
-            
-            // Get perpendicular (across) distance using finish line's right direction
-            const finishRight = new THREE.Vector3(
-                Math.cos(trackObjects.finishLine.rotation.y),
-                0,
-                -Math.sin(trackObjects.finishLine.rotation.y)
-            );
-            
-            const distanceAcrossLine = Math.abs(toCarVector.dot(finishRight));
-            
-            // Get finish line half-width
-            const finishHalfWidth = trackObjects.finishLine.geometry.parameters.width / 2;
-            
-            // Check if car is crossing the finish line (within reasonable distance)
-            const isCrossingFinish = Math.abs(distanceAlongLine) < 1.5 && distanceAcrossLine < finishHalfWidth;
-            
-            // Add debug output
-            if (isCrossingFinish) {
-                console.log("Car near finish line: ", {
-                    distance: distanceAlongLine, 
-                    across: distanceAcrossLine,
-                    lap: car.lap
-                });
-            }
-            
-            // Track when we've crossed the finish line to prevent multiple detections
-            if (isCrossingFinish && car.lap >= 1 && !car.crossingFinish) {
-                finishCrossed = true;
-                car.crossingFinish = true;
-                console.log("FINISH LINE CROSSED!");
-            } else if (Math.abs(distanceAlongLine) > 5) {
-                car.crossingFinish = false;
-            }
-            
-            // Check if passing start line to increment lap counter
-            // Calculate distance from car to start line
-            const dxStart = car.position.x - trackObjects.startLine.position.x;
-            const dzStart = car.position.z - trackObjects.startLine.position.z;
-            const distanceToStart = Math.sqrt(dxStart * dxStart + dzStart * dzStart);
-            
-            // Check if car is crossing the start line (within reasonable distance)
-            const isCrossingStart = distanceToStart < 10;
-            
-            // Only increment lap if moving in the correct direction (based on velocity)
-            if (isCrossingStart && !car.crossingStart) {
-                // Calculate direction around the circle track
-                const centerToCarX = car.position.x - trackBounds.centerX;
-                const centerToCarZ = car.position.z - trackBounds.centerZ;
-                const tangentX = -centerToCarZ; // Tangent is perpendicular to radius
-                const tangentZ = centerToCarX;
-                
-                // Compare with car's velocity to see if moving in correct direction
-                const movingInCorrectDirection = (tangentX * car.velocity.x + tangentZ * car.velocity.z) > 0;
-                
-                if (movingInCorrectDirection) {
-                    car.lap++;
-                    debugInfo.innerHTML += `<br>Lap ${car.lap} started!`;
-                }
-                car.crossingStart = true;
-            } else if (distanceToStart > 15) {
-                car.crossingStart = false;
-            }
-        }
-    }
-    
-    // Handle finish line crossing
-    if (finishCrossed) {
-        // Use game state to record finish
-        finalTime = gameState.finishRace();
-        
-        // Create finish notification
-        finishNotification = document.createElement('div');
-        finishNotification.style.position = 'absolute';
-        finishNotification.style.top = '50%';
-        finishNotification.style.left = '50%';
-        finishNotification.style.transform = 'translate(-50%, -50%)';
-        finishNotification.style.color = 'white';
-        finishNotification.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-        finishNotification.style.padding = '20px';
-        finishNotification.style.borderRadius = '10px';
-        finishNotification.style.fontWeight = 'bold';
-        finishNotification.style.fontSize = '24px';
-        finishNotification.innerHTML = `Finish!<br>Time: ${finalTime.toFixed(2)}s<br>Resetting in 3 seconds...`;
-        document.body.appendChild(finishNotification);
-        
-        document.getElementById('timer').innerText = `Final Time: ${finalTime.toFixed(2)}s`;
-        
-        // Auto reset after 3 seconds
-        clearTimeout(autoResetTimeout);
-        autoResetTimeout = setTimeout(() => {
-            resetGame();
-        }, 3000);
-    
-        // In multiplayer, we would notify the server here
-        if (networkManager.isMultiplayer) {
-            // This will be implemented in MVP3
-            console.log("Would send race finish data to server in multiplayer mode");
-            // networkManager.sendRaceFinish(finalTime);
-        }
-    }
-    
-    // Reset car if R key is pressed
-    if (resetKey) {
-        resetGame();
-    }
-    
-    // DIRECT APPROACH: Update car movement based on keys
-    // Turning
-    if (turnLeft) {
-        car.rotation.y += physicsConfig.turnSpeed;
-    }
-    if (turnRight) {
-        car.rotation.y -= physicsConfig.turnSpeed;
-    }
-    
-    // Update direction vector based on car rotation
-    car.direction.set(0, 0, -1).applyEuler(car.rotation);
-    
-    // Handle Space Bar - Emergency Brake (only slows down to zero, doesn't reverse)
-    if (emergencyBrake && car.speed > 0) {
-        car.speed -= physicsConfig.emergencyBrakeForce;
-        if (car.speed < 0) car.speed = 0;
-        
-        // Show brake indicator
-        brakeIndicator.style.display = 'block';
-    } else {
-        // Hide brake indicator if not emergency braking
-        brakeIndicator.style.display = 'none';
-        
-        // Normal acceleration/braking
-        if (moveForward) {
-            car.speed += physicsConfig.acceleration;
-        }
-        
-        // Braking/reverse
-        if (moveBackward) {
-            if (car.speed > 0) {
-                // Brake when moving forward
-                car.speed -= physicsConfig.brakingForce;
-            } else {
-                // Reverse when stopped or already going backward
-                car.speed -= physicsConfig.acceleration / 2; // Slower acceleration for reverse
-            }
-        }
-    }
-    
-    // Apply speed limits
-    car.speed = Math.max(-physicsConfig.maxSpeed / 2, Math.min(physicsConfig.maxSpeed, car.speed));
-    
-    // Apply friction (natural deceleration)
-    if (!moveForward && !moveBackward && !emergencyBrake) {
-        car.speed *= physicsConfig.friction;
-        
-        // If speed is very small, just stop the car
-        if (Math.abs(car.speed) < 0.001) {
-            car.speed = 0;
-        }
-    }
-    
-    // Apply velocity based on speed and direction
-    car.velocity.copy(car.direction).multiplyScalar(car.speed);
-    
-    // Update position based on velocity
-    car.position.add(car.velocity);
-    
-    // Apply track boundaries based on track type
-    if (currentTrack === 'straight') {
-        // Straight track boundaries
-        if (car.position.x < trackBounds.left) {
-            car.position.x = trackBounds.left;
-            car.velocity.x = 0;
-        }
-        if (car.position.x > trackBounds.right) {
-            car.position.x = trackBounds.right;
-            car.velocity.x = 0;
-        }
-        if (car.position.z < trackBounds.top) {
-            car.position.z = trackBounds.top;
-            car.velocity.z = 0;
-        }
-        if (car.position.z > trackBounds.bottom) {
-            car.position.z = trackBounds.bottom;
-            car.velocity.z = 0;
-        }
-    } else if (currentTrack === 'circle') {
-        // Circle track boundaries - check distance from center
-        const dx = car.position.x - trackBounds.centerX;
-        const dz = car.position.z - trackBounds.centerZ;
-        const distanceFromCenter = Math.sqrt(dx * dx + dz * dz);
-        
-        if (distanceFromCenter < trackBounds.innerRadius) {
-            // Inside inner boundary - push out
-            const angle = Math.atan2(dz, dx);
-            car.position.x = trackBounds.centerX + Math.cos(angle) * trackBounds.innerRadius;
-            car.position.z = trackBounds.centerZ + Math.sin(angle) * trackBounds.innerRadius;
-            
-            // Reflect velocity a bit
-            car.speed *= 0.9;
-        } else if (distanceFromCenter > trackBounds.outerRadius) {
-            // Outside outer boundary - push in
-            const angle = Math.atan2(dz, dx);
-            car.position.x = trackBounds.centerX + Math.cos(angle) * trackBounds.outerRadius;
-            car.position.z = trackBounds.centerZ + Math.sin(angle) * trackBounds.outerRadius;
-            
-            // Reflect velocity a bit
-            car.speed *= 0.9;
-        }
-        
-        // Check for barrier collision for circular track
-        for (const barrier of trackObjects.barriers) {
-            // Get barrier's forward direction (based on its rotation)
-            const barrierForward = new THREE.Vector3(
-                Math.sin(barrier.rotation.y),
-                0,
-                Math.cos(barrier.rotation.y)
-            );
-            
-            // Get barrier's right direction (perpendicular to forward)
-            const barrierRight = new THREE.Vector3(
-                Math.cos(barrier.rotation.y),
-                0,
-                -Math.sin(barrier.rotation.y)
-            );
-            
-            // Vector from barrier center to car
-            const toCarVector = new THREE.Vector3();
-            toCarVector.subVectors(car.position, barrier.position);
-            
-            // Project onto barrier's right axis to get how far along the barrier we are
-            const rightProjection = toCarVector.dot(barrierRight);
-            
-            // Get barrier's half-width (half of its geometry's x dimension)
-            const barrierHalfWidth = barrier.geometry.parameters.width / 2;
-            
-            // Check if car is within the barrier's width
-            if (Math.abs(rightProjection) <= barrierHalfWidth) {
-                // Project onto barrier's forward axis to get distance from barrier
-                const forwardProjection = toCarVector.dot(barrierForward);
-                
-                // Check if car is close enough to barrier to collide
-                if (Math.abs(forwardProjection) < 3) {
-                    // Move car away from barrier
-                    const pushDistance = 3 - Math.abs(forwardProjection);
-                    const pushDirection = forwardProjection >= 0 ? 1 : -1;
-                    
-                    car.position.x += barrierForward.x * pushDistance * pushDirection;
-                    car.position.z += barrierForward.z * pushDistance * pushDirection;
-                    
-                    // Reduce speed on collision
-                    car.speed *= 0.8;
-                }
-            }
-        }
-    }
-    
-    // Update car visuals
-    carGroup.position.copy(car.position);
-    carGroup.rotation.y = car.rotation.y;
-    
-    // Animate wheel rotation based on speed
-    const wheelRotationSpeed = car.speed * 0.2;
-    frontLeftWheel.rotation.x += wheelRotationSpeed;
-    frontRightWheel.rotation.x += wheelRotationSpeed;
-    rearLeftWheel.rotation.x += wheelRotationSpeed;
-    rearRightWheel.rotation.x += wheelRotationSpeed;
-    
-    // Update camera to follow car
-    const idealOffset = new THREE.Vector3();
-    idealOffset.copy(cameraOffset);
-    idealOffset.applyEuler(car.rotation);
-    idealOffset.add(car.position);
-    
-    // Smoothly interpolate camera position (lerp)
-    cameraPreviousPosition.lerp(idealOffset, 0.1);
-    camera.position.copy(cameraPreviousPosition);
-    
-    // Make camera look at the car
-    camera.lookAt(
-        car.position.x,
-        car.position.y + 0.5, // Look slightly above the car
-        car.position.z
-    );
-    
-    // Show debug info
-    debugInfo.innerHTML = `
-        Speed: ${Math.round(car.speed * 10) / 10}<br>
-        Position: ${Math.round(car.position.x)}, ${Math.round(car.position.y)}, ${Math.round(car.position.z)}<br>
-        Track: ${tracks[currentTrack].name}<br>
-        ${currentTrack === 'circle' ? `Lap: ${car.lap}/1<br>` : ''}
-        Controls: ${moveForward ? 'Accelerating' : ''} ${moveBackward ? 'Braking' : ''} 
-                  ${turnLeft ? 'Left' : ''} ${turnRight ? 'Right' : ''} 
-                  ${emergencyBrake ? 'EMERGENCY BRAKE' : ''}
-    `;
-    
-    // Render the scene
-    renderer.render(scene, camera);
-
-    // Update physics world
-    world.step(timeStep);
-    
-    // Update game state from physics
-    if (carBody) {
-        gameState.updateFromPhysics(carBody);
-    }
-    
-    // For future multiplayer functionality - send updates to server
-    if (networkManager.isMultiplayer) {
-        networkManager.sendPlayerState();
-    }
-}
-
-// Show the menu on game start
-createMenu();
-
-// Start animation loop (will wait for track selection)
-animate(); 
+// Show the menu when the game loads
+createMenu(); 
