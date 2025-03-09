@@ -3,55 +3,53 @@ import * as THREE from 'three';
 
 export class PhysicsWorld {
     constructor() {
-        // Initialize Cannon.js world with appropriate gravity
+        // Initialize Cannon.js world with standard gravity
         this.world = new CANNON.World({
-            gravity: new CANNON.Vec3(0, -9.81, 0) 
+            gravity: new CANNON.Vec3(0, -9.81, 0)
         });
         
-        // Use standard broadphase for more reliable physics
+        // Use the SAP broadphase for improved performance
         this.world.broadphase = new CANNON.SAPBroadphase(this.world);
         
-        // CRITICAL FIX: Reduced solver iterations for better performance at high speeds
-        this.world.solver.iterations = 6; // Reduced from 8
-        this.world.solver.tolerance = 0.02; // Increased tolerance for better performance
+        // Solver settings for performance at high speeds
+        this.world.solver.iterations = 6;
+        this.world.solver.tolerance = 0.02;
         
-        // Disable sleeping for more reliable physics
+        // Disable sleeping for consistent simulation
         this.world.allowSleep = false;
         
-        // Set up contact material properties
+        // Set up materials for ground and wheels
         this.groundMaterial = new CANNON.Material('ground');
         this.wheelMaterial = new CANNON.Material('wheel');
         
-        // CRITICAL FIX: Optimized wheel-ground contact for high-speed performance
+        // Adjust wheel-ground contact for smoother, more realistic interactions
         const wheelGroundContact = new CANNON.ContactMaterial(
             this.wheelMaterial,
             this.groundMaterial,
             {
-                friction: 2.0, // Reduced from 3.0 for less resistance at high speeds
-                restitution: 0.1,
-                contactEquationStiffness: 1000,
-                contactEquationRelaxation: 3,
-                frictionEquationStiffness: 1000,
+                friction: 1.2, // Increased from 0.9 for better grip on slopes
+                restitution: 0.01, // Further reduced for less bouncing on height changes
+                contactEquationStiffness: 1000, // Reduced for smoother transitions over height changes
+                contactEquationRelaxation: 3.0, // Increased for smoother response
+                frictionEquationStiffness: 1000, // Matches contact equation stiffness
+                frictionEquationRelaxation: 2.5, // Added for more consistent friction response
             }
         );
-        
         this.world.addContactMaterial(wheelGroundContact);
         
-        // CRITICAL FIX: Reduced global friction for better high-speed performance
-        this.world.defaultContactMaterial.friction = 0.2; // Reduced from 0.3
-        this.world.defaultContactMaterial.restitution = 0.1;
+        // Global contact material settings (lower friction for less abrupt stops)
+        this.world.defaultContactMaterial.friction = 0.2; // Increased slightly for more realistic physics
+        this.world.defaultContactMaterial.restitution = 0.05; // Reduced for less bouncing
         
-        // Fixed timestep for physics
+        // Fixed timestep for stable physics
         this.fixedTimeStep = 1.0 / 60.0;
         this.maxSubSteps = 3;
     }
 
     update(deltaTime) {
-        // Use a maximum time delta to prevent instability after pauses/lag
-        const maxDelta = 1/30;
+        // Clamp delta to avoid instability (especially after lag/pauses)
+        const maxDelta = 1 / 30;
         const clampedDelta = Math.min(deltaTime, maxDelta);
-        
-        // Step the physics world
         this.world.step(this.fixedTimeStep, clampedDelta, this.maxSubSteps);
     }
 }
@@ -60,21 +58,19 @@ export class Vehicle {
     constructor(physicsWorld, position = new CANNON.Vec3(0, 1, 0)) {
         this.world = physicsWorld.world;
         
-        // CRITICAL FIX: Dramatically increased force for higher top speed
-        this.maxForce = 15000; // Doubled from 7500 for much higher top speed
+        // Adjusted force/brake values for smoother, more realistic driving
+        this.maxForce = 5500; // Lower max force so full power isn't applied instantly
         this.maxSteerVal = 0.3;
-        this.maxBrakeForce = 15000;
+        this.maxBrakeForce = 8000; // Reduced brake force for gradual deceleration
         
-        // Create vehicle chassis with proper dimensions
+        // New throttle property for smooth ramping (value between 0 and 1)
+        this.currentThrottle = 0;
+        this.throttleIncreaseRate = 0.5; // Increase per second when accelerating
+        this.throttleDecreaseRate = 0.3; // Decrease per second when not accelerating
+        
+        // Create vehicle chassis
         const chassisShape = new CANNON.Box(new CANNON.Vec3(1, 0.5, 2));
-        
-        // Keep Y position lower to prevent initial flying
-        const startPosition = new CANNON.Vec3(
-            position.x,
-            position.y,
-            position.z
-        );
-        
+        const startPosition = new CANNON.Vec3(position.x, position.y, position.z);
         this.chassisBody = new CANNON.Body({
             mass: 1200,
             position: startPosition,
@@ -82,20 +78,18 @@ export class Vehicle {
             material: physicsWorld.groundMaterial
         });
         
-        // CRITICAL FIX: Reduced damping to allow higher top speed
-        this.chassisBody.angularDamping = 0.5; // Reduced from 0.6
-        this.chassisBody.linearDamping = 0.05; // Significantly reduced from 0.2 to allow higher speeds
-        
-        // Disable sleeping for the chassis
+        // Lower damping values for higher top speeds and more realistic inertia
+        this.chassisBody.angularDamping = 0.05;
+        this.chassisBody.linearDamping = 0.005;
         this.chassisBody.allowSleep = false;
         
-        // Zero all initial velocity and forces
+        // Zero out initial velocities/forces
         this.chassisBody.velocity.set(0, 0, 0);
         this.chassisBody.angularVelocity.set(0, 0, 0);
         this.chassisBody.force.set(0, 0, 0);
         this.chassisBody.torque.set(0, 0, 0);
         
-        // Define the vehicle axis configuration
+        // Configure the vehicle using a RaycastVehicle
         this.vehicle = new CANNON.RaycastVehicle({
             chassisBody: this.chassisBody,
             indexRightAxis: 0,     // x is right
@@ -103,47 +97,46 @@ export class Vehicle {
             indexForwardAxis: 2,   // z axis (negative z is forward)
         });
         
-        // CRITICAL FIX: Further optimized wheel options for better speed
+        // Wheel options with settings tuned for smoother behavior
         const wheelOptions = {
             radius: 0.5,
             directionLocal: new CANNON.Vec3(0, -1, 0),
-            suspensionStiffness: 35, // Reduced from 40 for smoother ride at high speeds
-            suspensionRestLength: 0.3,
-            frictionSlip: 4.0, // Reduced from 5.0 for less resistance at high speeds
-            dampingRelaxation: 2.5,
-            dampingCompression: 4.5,
-            maxSuspensionForce: 50000,
-            rollInfluence: 0.05,
+            suspensionStiffness: 30, // Reduced from 35 for smoother ride over undulating terrain
+            suspensionRestLength: 0.4, // Increased from 0.3 for more suspension travel
+            frictionSlip: 2.5, // Reduced for more consistent behavior on slopes
+            dampingRelaxation: 2.2, // Tuned for smoother ride
+            dampingCompression: 4.0, // Slightly reduced for better height transitions
+            maxSuspensionForce: 60000, // Increased for better stability on slopes
+            rollInfluence: 0.01, // Reduced for more stability on lateral slopes
             axleLocal: new CANNON.Vec3(-1, 0, 0),
             chassisConnectionPointLocal: new CANNON.Vec3(0, 0, 0),
-            maxSuspensionTravel: 0.3,
+            maxSuspensionTravel: 0.7, // Increased from 0.3 for better handling of height changes
             customSlidingRotationalSpeed: -30,
             useCustomSlidingRotationalSpeed: true
         };
 
-        // Improved wheel positioning for better stability
+        // Define wheel positions for stability
         const wheelPositions = [
-            { x: -1, y: -0.1, z: -1.6 },   // Front left
-            { x: 1, y: -0.1, z: -1.6 },    // Front right
-            { x: -1, y: -0.1, z: 1.6 },    // Rear left
-            { x: 1, y: -0.1, z: 1.6 }      // Rear right
+            { x: -2, y: -1.5, z: -3.9 },   // Front left
+            { x: 2, y: -1.5, z: -3.9 },    // Front right
+            { x: -2, y: -1.5, z: 2 },    // Rear left
+            { x: 2, y: -1.5, z: 2 }      // Rear right
         ];
 
         this.wheelBodies = [];
         
-        // Add wheels with proper connection points
+        // Add wheels at the defined positions
         wheelPositions.forEach(pos => {
             const connectionPoint = new CANNON.Vec3(pos.x, pos.y, pos.z);
             wheelOptions.chassisConnectionPointLocal.copy(connectionPoint);
             this.vehicle.addWheel(wheelOptions);
         });
         
-        // Add the vehicle to the world
+        // Add the vehicle to the physics world
         this.vehicle.addToWorld(this.world);
         
-        // Create wheel bodies with PROPER ORIENTATION
+        // Create and orient the wheel bodies correctly
         this.vehicle.wheelInfos.forEach((wheel, index) => {
-            // Create a properly oriented cylinder for the wheel
             const cylinderShape = new CANNON.Cylinder(
                 wheel.radius,
                 wheel.radius,
@@ -156,27 +149,21 @@ export class Vehicle {
                 material: physicsWorld.wheelMaterial
             });
             
-            // The cylinder's local y-axis needs to be rotated 
-            // to match the wheel's axle (which is along the local x-axis)
+            // Rotate the cylinder so its local y-axis aligns with the wheel axle (x-axis)
             const quaternion = new CANNON.Quaternion();
             quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1), Math.PI / 2);
-            
-            // Add the shape with the rotation to align it properly
             wheelBody.addShape(cylinderShape, new CANNON.Vec3(), quaternion);
+            
+            // Use kinematic type for wheels (their positions are updated manually)
             wheelBody.type = CANNON.Body.KINEMATIC;
             this.wheelBodies.push(wheelBody);
             this.world.addBody(wheelBody);
         });
         
-        // Initialize all wheels with zero forces
+        // Initialize wheel forces and steering to zero
         this.initWheels();
-        
-        // CRITICAL FIX: Add properties to track speed for progressive acceleration
-        this.lastSpeed = 0;
-        this.accelerationTimer = 0;
     }
     
-    // Initialize wheels with zero forces
     initWheels() {
         for (let i = 0; i < this.vehicle.wheelInfos.length; i++) {
             this.applyEngineForce(0, i);
@@ -186,7 +173,7 @@ export class Vehicle {
     }
     
     update() {
-        // Update wheel positions and orientations based on vehicle state
+        // Update wheel positions/orientations from the physics simulation
         for (let i = 0; i < this.vehicle.wheelInfos.length; i++) {
             this.vehicle.updateWheelTransform(i);
             const transform = this.vehicle.wheelInfos[i].worldTransform;
@@ -198,9 +185,8 @@ export class Vehicle {
     // Control methods
     setBrake(brakeForce = 0, wheelIndex = -1) {
         this.chassisBody.wakeUp();
-        
         if (wheelIndex === -1) {
-            // Apply to all wheels
+            // Apply braking to all wheels
             for (let i = 0; i < 4; i++) {
                 this.vehicle.setBrake(brakeForce, i);
             }
@@ -219,108 +205,136 @@ export class Vehicle {
         this.vehicle.applyEngineForce(force, wheelIndex);
     }
     
-    // CRITICAL FIX: Completely redesigned acceleration method with progressive force scaling
-    accelerate(force = this.maxForce) {
-        this.chassisBody.wakeUp();
-        
-        // Calculate current speed
-        const velocity = this.chassisBody.velocity;
-        const currentSpeed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
-        
-        // CRITICAL FIX: Implement progressive force scaling based on speed
-        // This is the key to achieving higher top speeds
-        let forceMultiplier;
-        
-        if (currentSpeed < 10) {
-            // Low speed: Apply high force to overcome initial resistance
-            forceMultiplier = 2.0;
-        } else if (currentSpeed < 30) {
-            // Medium speed: Maintain strong acceleration
-            forceMultiplier = 4;
-        } else if (currentSpeed < 50) {
-            // High speed: Increase force to overcome increased air resistance
-            forceMultiplier = 8;
-        } else if (currentSpeed < 70) {
-            // Very high speed: Apply even more force
-            forceMultiplier = 20.0;
+    /**
+     * Smoothly apply acceleration.
+     * Call accelerate(true) each frame when the accelerator is pressed,
+     * and accelerate(false) when it is released.
+     */
+    accelerate(accelerating) {
+        const dt = 1 / 20; // assuming 60fps; ideally, pass delta time
+        if (accelerating) {
+            // Gradually increase throttle
+            this.currentThrottle = Math.min(1, this.currentThrottle + dt * this.throttleIncreaseRate);
         } else {
-            // Extreme speed: Maximum force to keep accelerating
-            forceMultiplier = 30.0;
+            // Gradually decay throttle
+            this.currentThrottle = Math.max(0, this.currentThrottle - dt * this.throttleDecreaseRate);
         }
         
-        // CRITICAL FIX: Apply acceleration boost if speed is increasing
-        // This helps overcome plateaus in acceleration
-        if (currentSpeed > this.lastSpeed) {
-            this.accelerationTimer += 1/60; // Assuming 60fps
-            if (this.accelerationTimer > 1.0) {
-                // After 1 second of continuous acceleration, apply boost
-                forceMultiplier *= 1.2;
-            }
-        } else {
-            // Reset acceleration timer if not accelerating
-            this.accelerationTimer = 0;
-        }
+        // Calculate base engine force
+        let engineForce = this.currentThrottle * this.maxForce;
         
-        // Store current speed for next comparison
-        this.lastSpeed = currentSpeed;
+        // Adjust force based on slope
+        // Get chassis orientation for slope-based force adjustment
+        const upAxis = new CANNON.Vec3(0, 1, 0);
+        const chassisUp = new CANNON.Vec3();
+        this.chassisBody.quaternion.vmult(upAxis, chassisUp);
         
-        // Apply NEGATIVE force to move forward (in negative Z direction)
-        const forwardForce = force * forceMultiplier;
+        // Calculate the dot product with world up vector to determine slope factor
+        // 1.0 = flat, <1.0 = uphill/downhill
+        const slopeFactor = chassisUp.dot(upAxis);
         
-        // Apply force distribution for optimal acceleration
-        // More power to rear wheels for better acceleration
-        this.applyEngineForce(forwardForce * 0.3, 2); // Rear left - more power
-        this.applyEngineForce(forwardForce * 0.3, 3); // Rear right - more power
+        // Get forward direction to determine if going uphill or downhill
+        const forwardAxis = new CANNON.Vec3(0, 0, -1); // z is forward axis in vehicle space
+        const chassisForward = new CANNON.Vec3();
+        this.chassisBody.quaternion.vmult(forwardAxis, chassisForward);
         
-        // Some power to front wheels for better traction
-        this.applyEngineForce(forwardForce * 0.7, 0); // Front left - less power
-        this.applyEngineForce(forwardForce * 0.7, 1); // Front right - less power
+        // Project chassisForward onto the horizontal plane
+        const horizontalForward = new CANNON.Vec3(
+            chassisForward.x,
+            0,
+            chassisForward.z
+        ).unit();
+        
+        // Get world gravity direction (normalized)
+        const gravity = new CANNON.Vec3(0, -1, 0);
+        
+        // Project gravity onto the forward direction to see if going uphill/downhill
+        const slopeDirection = horizontalForward.dot(
+            new CANNON.Vec3(0, chassisUp.y < 0 ? -chassisUp.y : chassisUp.y, 0)
+        );
+        
+        // Adjust force based on slope - apply more force uphill, less downhill
+        // The steeper the slope (smaller slopeFactor), the more adjustment
+        const slopeAdjustment = 1 + (1 - slopeFactor) * 2 * slopeDirection;
+        engineForce = engineForce * slopeAdjustment;
+        
+        // Distribute the force with more to rear wheels for better traction
+        this.applyEngineForce(engineForce * 0.3, 0); // Front left
+        this.applyEngineForce(engineForce * 0.3, 1); // Front right
+        this.applyEngineForce(engineForce * 0.7, 2); // Rear left
+        this.applyEngineForce(engineForce * 0.7, 3); // Rear right
     }
     
     brake(force = this.maxBrakeForce) {
         this.chassisBody.wakeUp();
-        this.setBrake(force);
+        
+        // Get chassis orientation to determine slope
+        const upAxis = new CANNON.Vec3(0, 1, 0);
+        const chassisUp = new CANNON.Vec3();
+        this.chassisBody.quaternion.vmult(upAxis, chassisUp);
+        
+        // Calculate the dot product with world up vector to determine slope factor
+        const slopeFactor = chassisUp.dot(upAxis);
+        
+        // Calculate how steep the slope is (1.0 = flat, <1.0 = sloped)
+        // Adjust braking force - apply more force on downhill to counteract gravity
+        const adjustedForce = force * (2 - slopeFactor);
+        
+        // Apply the adjusted braking force
+        this.setBrake(adjustedForce);
     }
     
     steer(steerValue) {
         this.chassisBody.wakeUp();
-        
         const clampedSteer = Math.max(-this.maxSteerVal, Math.min(this.maxSteerVal, steerValue));
         // Apply steering to front wheels
         this.setSteeringValue(clampedSteer, 0);
         this.setSteeringValue(clampedSteer, 1);
     }
     
-    // Improved reset function to prevent flying
+    /**
+     * Reset the vehicle's position and state.
+     */
     reset(position = new CANNON.Vec3(0, 1, 0), quaternion = new CANNON.Quaternion()) {
-        // Zero all velocities and forces first
+        // Zero out velocities and forces
         this.chassisBody.velocity.setZero();
         this.chassisBody.angularVelocity.setZero();
         this.chassisBody.force.setZero();
         this.chassisBody.torque.setZero();
         
-        // Reset chassis position and rotation
+        // Reset position and orientation
         this.chassisBody.position.copy(position);
         this.chassisBody.quaternion.copy(quaternion);
         
-        // Apply zero force to all wheels
+        // Reset forces and steering on all wheels
         for (let i = 0; i < 4; i++) {
             this.applyEngineForce(0, i);
             this.setBrake(0, i);
             if (i < 2) this.setSteeringValue(0, i);
         }
         
-        // Apply a small brake to ensure the car stays put
+        // Apply a slight brake to ensure the car remains stationary
         this.setBrake(this.maxBrakeForce * 0.1);
         
-        // Reset wheel transforms
+        // Force update the suspension and wheel positions
         this.update();
         
-        // Ensure the chassis is awake to receive the changes
+        // Make sure the chassis is awake 
         this.chassisBody.wakeUp();
         
-        // Reset acceleration tracking
-        this.lastSpeed = 0;
-        this.accelerationTimer = 0;
+        // Reset throttle state
+        this.currentThrottle = 0;
+        
+        // Extra stability - apply slight downward force to prevent bouncing
+        this.chassisBody.force.y = -this.chassisBody.mass * 9.81 * 1.1; // Slightly more than gravity
+        
+        // Realign suspension by setting it to rest length
+        for (let i = 0; i < this.vehicle.wheelInfos.length; i++) {
+            const wheelInfo = this.vehicle.wheelInfos[i];
+            wheelInfo.suspensionLength = wheelInfo.restLength;
+        }
+        
+        // Force another update after suspension adjustment
+        this.update();
     }
-} 
+}

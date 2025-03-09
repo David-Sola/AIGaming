@@ -5,6 +5,8 @@ import GameState from './gameState.js';
 import NetworkManager from './network.js';
 import { PhysicsWorld, Vehicle } from './physics.js';
 import { VehicleVisual } from './vehicleVisual.js';
+// Import track modules
+import { tracks, clearTrack } from './tracks/index.js';
 
 // Initialize game state and network manager
 const gameState = new GameState();
@@ -17,36 +19,6 @@ let physicsWorld = null;
 let vehicle = null;
 let vehicleVisual = null;
 let lastTime = performance.now();
-
-// Track definitions
-const tracks = {
-    straight: {
-        name: "Straight Track",
-        description: "A simple straight track with a start and finish line",
-        create: createStraightTrack,
-        bounds: {
-            left: -5,
-            right: 5,
-            top: -24.5,
-            bottom: 24.5
-        },
-        startPosition: new THREE.Vector3(0, 0.5, 22),
-        startRotation: 0
-    },
-    circle: {
-        name: "Giant Circle Track",
-        description: "A massive circular track with separate start and finish lines",
-        create: createCircleTrack,
-        bounds: {
-            centerX: 0,
-            centerZ: 0,
-            innerRadius: 300,
-            outerRadius: 315
-        },
-        startPosition: new THREE.Vector3(0, 0.5, 0),
-        startRotation: 0
-    }
-};
 
 // Track keyboard input
 const keys = { 
@@ -101,184 +73,6 @@ const trackObjects = {
 // Global reference to the menu container
 let menuContainer;
 
-// Functions to create tracks
-function createStraightTrack() {
-    // Clear any existing track objects
-    clearTrack();
-    
-    // CRITICAL FIX: Create a wider and longer track
-    const trackGeometry = new THREE.PlaneGeometry(20, 100); // Wider and longer
-    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ 
-        color: 0x666666, // Darker color
-        roughness: 0.8, // Add roughness for better visual indication of surface
-    }));
-    trackObjects.track.rotation.x = -Math.PI / 2;
-    trackObjects.track.receiveShadow = true;
-    scene.add(trackObjects.track);
-    
-    // CRITICAL FIX: Add track to physics world with proper dimensions and position
-    // Using a box instead of a plane for better collision detection
-    const groundShape = new CANNON.Box(new CANNON.Vec3(10, 0.1, 50)); // Half-extents
-    const groundBody = new CANNON.Body({
-        mass: 0, // Static body
-        shape: groundShape,
-        material: physicsWorld.groundMaterial,
-        position: new CANNON.Vec3(0, -0.1, 0) // Slightly below y=0 to ensure good contact
-    });
-    physicsWorld.world.addBody(groundBody);
-    
-    // Add walls to prevent falling off the track
-    // Left wall
-    const leftWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
-    const leftWallBody = new CANNON.Body({
-        mass: 0,
-        shape: leftWallShape,
-        position: new CANNON.Vec3(-10.5, 1, 0)
-    });
-    physicsWorld.world.addBody(leftWallBody);
-    
-    // Right wall
-    const rightWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
-    const rightWallBody = new CANNON.Body({
-        mass: 0,
-        shape: rightWallShape,
-        position: new CANNON.Vec3(10.5, 1, 0)
-    });
-    physicsWorld.world.addBody(rightWallBody);
-    
-    // Create start line
-    const startGeometry = new THREE.PlaneGeometry(20, 1); // Match track width
-    trackObjects.startLine = new THREE.Mesh(startGeometry, new THREE.MeshPhongMaterial({ color: 0x00ff00 }));
-    trackObjects.startLine.rotation.x = -Math.PI / 2;
-    trackObjects.startLine.position.z = 24;
-    trackObjects.startLine.position.y = 0.01; // Slightly above track to prevent z-fighting
-    scene.add(trackObjects.startLine);
-    
-    // CRITICAL FIX: Create better visual walls to match the physics walls
-    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0xcccccc });
-    
-    // Left wall visual
-    const leftWallGeometry = new THREE.BoxGeometry(1, 2, 100);
-    const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial);
-    leftWall.position.set(-10.5, 1, 0);
-    scene.add(leftWall);
-    trackObjects.barriers.push(leftWall);
-    
-    // Right wall visual
-    const rightWallGeometry = new THREE.BoxGeometry(1, 2, 100);
-    const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial);
-    rightWall.position.set(10.5, 1, 0);
-    scene.add(rightWall);
-    trackObjects.barriers.push(rightWall);
-    
-    // Add directional markings on track to show direction
-    const arrowGeometry = new THREE.PlaneGeometry(5, 2);
-    const arrowMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
-    
-    for (let z = 20; z >= -40; z -= 10) {
-        const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
-        arrow.rotation.x = -Math.PI / 2;
-        arrow.rotation.z = Math.PI; // Point in the forward direction
-        arrow.position.set(0, 0.02, z);
-        scene.add(arrow);
-        trackObjects.boundaries.push(arrow);
-    }
-}
-
-function createCircleTrack() {
-    // Clear any existing track objects
-    clearTrack();
-    
-    // Track parameters
-    const innerRadius = tracks.circle.bounds.innerRadius;
-    const outerRadius = tracks.circle.bounds.outerRadius;
-    const segments = 128;
-    
-    // Create a circular track
-    const trackGeometry = new THREE.RingGeometry(innerRadius, outerRadius, segments);
-    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ color: 0x888888 }));
-    trackObjects.track.rotation.x = -Math.PI / 2;
-    trackObjects.track.receiveShadow = true;
-    scene.add(trackObjects.track);
-    
-    // Add track to physics world - approximate with segments
-    const trackSegments = 32; // Fewer segments for physics performance
-    const segmentAngle = (2 * Math.PI) / trackSegments;
-    
-    for (let i = 0; i < trackSegments; i++) {
-        const angle = i * segmentAngle;
-        const nextAngle = (i + 1) * segmentAngle;
-        
-        // Create segment vertices
-        const innerStart = new CANNON.Vec3(
-            innerRadius * Math.cos(angle),
-            0,
-            innerRadius * Math.sin(angle)
-        );
-        const outerStart = new CANNON.Vec3(
-            outerRadius * Math.cos(angle),
-            0,
-            outerRadius * Math.sin(angle)
-        );
-        const innerEnd = new CANNON.Vec3(
-            innerRadius * Math.cos(nextAngle),
-            0,
-            innerRadius * Math.sin(nextAngle)
-        );
-        const outerEnd = new CANNON.Vec3(
-            outerRadius * Math.cos(nextAngle),
-            0,
-            outerRadius * Math.sin(nextAngle)
-        );
-        
-        // Create trimesh for segment
-        const vertices = new Float32Array([
-            innerStart.x, innerStart.y, innerStart.z,
-            outerStart.x, outerStart.y, outerStart.z,
-            innerEnd.x, innerEnd.y, innerEnd.z,
-            outerEnd.x, outerEnd.y, outerEnd.z
-        ]);
-        
-        const indices = new Int16Array([0, 1, 2, 2, 1, 3]);
-        
-        const trimeshShape = new CANNON.Trimesh(vertices, indices);
-        const segmentBody = new CANNON.Body({
-            mass: 0,
-            shape: trimeshShape,
-            material: physicsWorld.groundMaterial
-        });
-        
-        physicsWorld.world.addBody(segmentBody);
-    }
-    
-    // Add visual elements (start/finish lines, barriers) similar to straight track
-    // ... (rest of the createCircleTrack implementation remains similar)
-}
-
-function clearTrack() {
-    // Remove track objects from scene
-    if (trackObjects.track) scene.remove(trackObjects.track);
-    if (trackObjects.startLine) scene.remove(trackObjects.startLine);
-    if (trackObjects.finishLine) scene.remove(trackObjects.finishLine);
-    
-    trackObjects.boundaries.forEach(boundary => scene.remove(boundary));
-    trackObjects.barriers.forEach(barrier => scene.remove(barrier));
-    
-    trackObjects.boundaries = [];
-    trackObjects.barriers = [];
-    
-    // Clear physics world (except vehicle)
-    if (physicsWorld) {
-        const bodiesToRemove = [];
-        physicsWorld.world.bodies.forEach(body => {
-            if (body !== vehicle?.chassisBody && !vehicle?.wheelBodies.includes(body)) {
-                bodiesToRemove.push(body);
-            }
-        });
-        bodiesToRemove.forEach(body => physicsWorld.world.removeBody(body));
-    }
-}
-
 function resetCar(position = tracks.straight.startPosition, rotation = tracks.straight.startRotation) {
     if (!vehicle || !vehicleVisual) return;
     
@@ -303,7 +97,8 @@ function resetCar(position = tracks.straight.startPosition, rotation = tracks.st
         vehicle.chassisBody.force.setZero();
         vehicle.chassisBody.torque.setZero();
         
-        // Convert position and rotation to CANNON types
+        // Use the track's defined position Y value, which is dynamically adjusted
+        // when the track is created to match the corresponding height on the curve
         const cannonPosition = new CANNON.Vec3(position.x, position.y + 1.0, position.z);
         const cannonQuaternion = new CANNON.Quaternion();
         cannonQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), rotation);
@@ -372,13 +167,14 @@ function startGame(trackKey) {
     
     // Create track
     currentTrack = tracks[trackKey];
-    currentTrack.create();
+    // Call the track creation function with required parameters
+    currentTrack.create(scene, physicsWorld, trackObjects);
     
     // CRITICAL FIX: Define a proper starting position
-    // For a straight track, start near the beginning with proper height
+    // Use the track's startPosition, which is dynamically updated for the sinusoidal track
     const startPos = new CANNON.Vec3(
         currentTrack.startPosition.x,
-        1.5, // Higher starting position to ensure no ground intersection
+        currentTrack.startPosition.y + 1.0, // Use track's defined height plus clearance
         currentTrack.startPosition.z
     );
     
@@ -398,49 +194,59 @@ function startGame(trackKey) {
                 currentTrack.startRotation
             );
             vehicle.chassisBody.quaternion.copy(quaternion);
+            
+            // For sinusoidal track, also adjust orientation to match track slope
+            if (trackKey === 'straight_height') {
+                // Calculate the slope at the starting position
+                const amplitude = 2; // Same as in track creation
+                const frequency = 0.1; // Same as in track creation
+                const z = startPos.z;
+                
+                // Calculate derivative of sine wave to find slope
+                const slope = amplitude * frequency * Math.cos(frequency * z);
+                
+                // Create a quaternion for pitch adjustment (rotation around X axis)
+                const pitchQuaternion = new CANNON.Quaternion();
+                // Negative because we want to match the slope direction
+                const angle = -Math.atan(slope);
+                pitchQuaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), angle);
+                
+                // Combine with yaw rotation (multiply quaternions)
+                vehicle.chassisBody.quaternion = vehicle.chassisBody.quaternion.mult(pitchQuaternion);
+            }
         }
         
-        // CRITICAL FIX: Let the vehicle "settle" into position with high starting position
-        // Do multiple substeps to ensure it's in a stable position
-        for (let i = 0; i < 10; i++) {
-            physicsWorld.update(1/60);
-            vehicle.update();
+        // Special handling for straight_height track
+        if (trackKey === 'straight_height') {
+            // Add a few initial physics stabilization steps
+            for (let i = 0; i < 10; i++) {
+                physicsWorld.update(1/60);
+                vehicle.update();
+            }
+            
+            // Apply very light braking to prevent unwanted sliding at start
+            vehicle.setBrake(vehicle.maxBrakeForce * 0.1);
         }
         
-        // CRITICAL FIX: Apply an initial brake to prevent rolling
-        vehicle.brake(vehicle.maxBrakeForce * 0.1);
+        // Add event listener for reset key
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyR') {
+                resetCar(currentTrack.startPosition, currentTrack.startRotation);
+            }
+        });
         
-        // Set up camera to look at the vehicle
-        const carPosition = vehicle.chassisBody.position;
-        camera.position.set(
-            carPosition.x, 
-            carPosition.y + 5, 
-            carPosition.z + 10 // Position behind the car
-        );
-        camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
-        
-        // Start game
+        // Game is now started
         gameStarted = true;
-        lastTime = performance.now();
         
-        // Add a debug indicator to the console
-        console.log("GAME STARTED - Vehicle position:", 
-                    vehicle.chassisBody.position.x.toFixed(2),
-                    vehicle.chassisBody.position.y.toFixed(2),
-                    vehicle.chassisBody.position.z.toFixed(2));
-    }, 500); // 500ms delay
-    
-    // Remove menu if it exists
-    const menuContainer = document.getElementById('menu-container');
-    if (menuContainer && menuContainer.parentNode) {
-        menuContainer.parentNode.removeChild(menuContainer);
-    }
-    
-    // Show game UI
-    const timer = document.getElementById('timer');
-    const debugInfo = document.getElementById('debugInfo');
-    if (timer) timer.style.display = 'block';
-    if (debugInfo) debugInfo.style.display = 'block';
+        // Remove menu if it exists
+        if (menuContainer && menuContainer.parentNode) {
+            menuContainer.parentNode.removeChild(menuContainer);
+            menuContainer = null;
+        }
+        
+        // Start animation loop
+        animate();
+    }, 500);
 }
 
 function updateVehicle() {
