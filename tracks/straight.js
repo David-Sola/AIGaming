@@ -1,103 +1,100 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { clearTrack } from './utils.js';
 
+// Update trackInfo for a larger, sinusoidal track
 export const trackInfo = {
-    name: "Straight Track",
-    description: "A simple straight track with a start and finish line",
+    name: "Optimized Sinus Track",
+    description: "A 5x larger track that curves with a sinusoidal shape",
     bounds: {
-        left: -5,
-        right: 5,
-        top: -24.5,
-        bottom: 24.5
+        left: -500,
+        right: 500,
+        top: -500,
+        bottom: 500
     },
-    startPosition: new THREE.Vector3(0, 1.5, 24),
-    startRotation: 0
+    // Choose a start position near one end of the track after rotation.
+    startPosition: new THREE.Vector3(50, 3.5, 450),
+    startRotation: -0.7
 };
-
+/**
+ * Creates a poly track using an extruded shape based on a sinusoidal centerline.
+ */
 export function createStraightTrack(scene, physicsWorld, trackObjects) {
-    // Clear any existing track objects first
-    clearTrack(scene, trackObjects, physicsWorld, null);
-    
-    // Create a wider and longer track
-    const trackGeometry = new THREE.PlaneGeometry(20, 100); // Wider and longer
-    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ 
-        color: 0x666666, // Darker color
-        roughness: 0.8, // Add roughness for better visual indication of surface
-    }));
-    trackObjects.track.rotation.x = -Math.PI / 2;
-    trackObjects.track.receiveShadow = true;
-    scene.add(trackObjects.track);
-    
-    // Add track to physics world with proper dimensions and position
-    // Using a box instead of a plane for better collision detection
-    const groundShape = new CANNON.Box(new CANNON.Vec3(10, 0.1, 50)); // Half-extents
-    const groundBody = new CANNON.Body({
-        mass: 0, // Static body
-        shape: groundShape,
-        material: physicsWorld.groundMaterial,
-        position: new CANNON.Vec3(0, -0.1, 0) // Slightly below y=0 to ensure good contact
-    });
-    physicsWorld.world.addBody(groundBody);
-    
-    // Add walls to prevent falling off the track
-    // Left wall
-    const leftWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
-    const leftWallBody = new CANNON.Body({
-        mass: 0,
-        shape: leftWallShape,
-        position: new CANNON.Vec3(-10.5, 1, 0)
-    });
-    physicsWorld.world.addBody(leftWallBody);
-    
-    // Right wall
-    const rightWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1, 50));
-    const rightWallBody = new CANNON.Body({
-        mass: 0,
-        shape: rightWallShape,
-        position: new CANNON.Vec3(10.5, 1, 0)
-    });
-    physicsWorld.world.addBody(rightWallBody);
-    
-    // Create start line
-    const startLinePosition = new THREE.Vector3(0, 0.01, 14);
-    const startGeometry = new THREE.PlaneGeometry(20, 1); // Match track width
-    trackObjects.startLine = new THREE.Mesh(startGeometry, new THREE.MeshPhongMaterial({ color: 0x00ff00 }));
-    trackObjects.startLine.rotation.x = -Math.PI / 2;
-    trackObjects.startLine.position.copy(startLinePosition);
-    scene.add(trackObjects.startLine);
-    
-    // Store start line position for debugging
-    console.log("Straight track start line position:", startLinePosition.x, startLinePosition.y, startLinePosition.z);
-    console.log("Straight track start position:", trackInfo.startPosition.x, trackInfo.startPosition.y, trackInfo.startPosition.z);
-    
-    // Create better visual walls to match the physics walls
-    const wallMaterial = new THREE.MeshPhongMaterial({ color: 0xcccccc });
-    
-    // Left wall visual
-    const leftWallGeometry = new THREE.BoxGeometry(1, 2, 100);
-    const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial);
-    leftWall.position.set(-10.5, 1, 0);
-    scene.add(leftWall);
-    trackObjects.barriers.push(leftWall);
-    
-    // Right wall visual
-    const rightWallGeometry = new THREE.BoxGeometry(1, 2, 100);
-    const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial);
-    rightWall.position.set(10.5, 1, 0);
-    scene.add(rightWall);
-    trackObjects.barriers.push(rightWall);
-    
-    // Add directional markings on track to show direction
-    const arrowGeometry = new THREE.PlaneGeometry(5, 2);
-    const arrowMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
-    
-    for (let z = 20; z >= -40; z -= 10) {
-        const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
-        arrow.rotation.x = -Math.PI / 2;
-        arrow.rotation.z = Math.PI; // Point in the forward direction
-        arrow.position.set(0, 0.02, z);
-        scene.add(arrow);
-        trackObjects.boundaries.push(arrow);
+    // Track parameters
+    const trackLength = 1000;  // total length of the track
+    const trackWidth = 50;     // width of the track
+    const numPoints = 50;      // number of points to define the centerline
+    const amplitude = 100;     // amplitude of the sinusoidal curve
+    const frequency = (2 * Math.PI) / 500;  // one full cycle every 500 units
+
+    // Generate centerline points along the z axis
+    const centerPoints = [];
+    for (let i = 0; i < numPoints; i++) {
+        const t = i / (numPoints - 1);
+        const z = THREE.MathUtils.lerp(-trackLength / 2, trackLength / 2, t);
+        const x = amplitude * Math.sin(frequency * z);
+        centerPoints.push(new THREE.Vector2(x, z));
     }
-} 
+
+    // Calculate left and right boundaries using tangent and normal vectors
+    const leftPoints = [];
+    const rightPoints = [];
+    for (let i = 0; i < centerPoints.length; i++) {
+        const p = centerPoints[i];
+        // Compute tangent vector
+        let tangent;
+        if (i < centerPoints.length - 1) {
+            tangent = new THREE.Vector2(centerPoints[i + 1].x - p.x, centerPoints[i + 1].y - p.y);
+        } else {
+            tangent = new THREE.Vector2(p.x - centerPoints[i - 1].x, p.y - centerPoints[i - 1].y);
+        }
+        tangent.normalize();
+        // Normal vector (perpendicular to tangent)
+        const normal = new THREE.Vector2(-tangent.y, tangent.x);
+        // Offset boundaries by half the track width
+        leftPoints.push(new THREE.Vector2(p.x + normal.x * trackWidth / 2, p.y + normal.y * trackWidth / 2));
+        rightPoints.push(new THREE.Vector2(p.x - normal.x * trackWidth / 2, p.y - normal.y * trackWidth / 2));
+    }
+
+    // Create a closed shape: traverse the left boundary and then the right boundary in reverse
+    const shape = new THREE.Shape();
+    shape.moveTo(leftPoints[0].x, leftPoints[0].y);
+    leftPoints.forEach(pt => shape.lineTo(pt.x, pt.y));
+    for (let i = rightPoints.length - 1; i >= 0; i--) {
+        shape.lineTo(rightPoints[i].x, rightPoints[i].y);
+    }
+    shape.closePath();
+
+    // Extrude the shape to create a 3D track with a small thickness
+    const extrudeSettings = {
+        steps: 1,
+        depth: 0.0001,          // thickness of the track
+        bevelEnabled: false
+    };
+    const trackGeometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+    const trackMaterial = new THREE.MeshPhongMaterial({ color: 0x666666, roughness: 0.8 });
+    const trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
+    // Rotate to lay flat on the XZ plane
+    trackMesh.rotation.x = -Math.PI / 2;
+    scene.add(trackMesh);
+    trackObjects.track = trackMesh;
+
+    // --- Physics ---
+    // Convert the extruded geometry into a Cannon-es Trimesh for collision detection.
+    const vertices = Array.from(trackGeometry.attributes.position.array);
+    let indices = [];
+    if (trackGeometry.index) {
+        indices = Array.from(trackGeometry.index.array);
+    } else {
+        indices = [...Array(trackGeometry.attributes.position.count).keys()];
+    }
+    const trackShapePhysics = new CANNON.Trimesh(vertices, indices);
+    const trackBody = new CANNON.Body({
+        mass: 0, // static body
+        material: physicsWorld.groundMaterial,
+    });
+    trackBody.addShape(trackShapePhysics);
+    trackBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    physicsWorld.world.addBody(trackBody);
+
+    console.log("Poly track created.");
+}

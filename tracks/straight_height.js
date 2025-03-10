@@ -1,301 +1,152 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
-import { clearTrack } from './utils.js';
 
 export const trackInfo = {
-    name: "Sinusoidal Track",
-    description: "A track with a sinusoidal height profile featuring hills and valleys",
+    name: "Downhill Sinus Track",
+    description: "A 5x larger track that curves with a sinusoidal shape and slopes downhill.",
     bounds: {
-        left: -5,
-        right: 5,
-        top: -24.5,
-        bottom: 24.5
+        left: -500,
+        right: 500,
+        top: -500,
+        bottom: 500
     },
-    startPosition: new THREE.Vector3(0, 10.5, 14),
-    startRotation: 0
+    // You may wish to adjust these so the vehicle starts on the uphill end.
+    startPosition: new THREE.Vector3(50, 140.5, 450),
+    startRotation: -0.7 // Consider offsetting this by the slope angle if needed.
 };
 
 export function createStraightHeightTrack(scene, physicsWorld, trackObjects) {
-    // Clear any existing track objects first
-    clearTrack(scene, trackObjects, physicsWorld, null);
-    
-    // Parameters for the track dimensions and sinusoidal profile
-    const segmentsX = 100;
-    const segmentsY = 2000;
-    const width = 20;
-    const height = 100;
-    const halfWidth = width / 2;
-    const halfHeight = height / 2;
-    const amplitude = 2;     // Reduced from 0.01 for gentler hills
-    const frequency = 0.1;         // Reduced from 10 for longer, more gradual waves
+    // Track parameters
+    const trackLength = 1000;   // total length of the track
+    const trackWidth = 50;      // width of the track
+    const numPoints = 50;       // number of points to define the centerline
+    const amplitude = 100;      // amplitude of the sinusoidal curve
+    const frequency = (2 * Math.PI) / 500;  // one full cycle every 500 units
+    const totalDrop = -300;      // total vertical drop over the track length
 
-    // -------------------------------
-    // Create visual track with sinusoidal height profile
-    // -------------------------------
-    // Create a plane geometry with sufficient subdivisions
-    const trackGeometry = new THREE.PlaneGeometry(width, height, segmentsX, segmentsY);
-    // Rotate the plane so that it lies in the xz plane (y becomes vertical)
-    trackGeometry.rotateX(-Math.PI / 2);
-    
-    // Modify the geometry's vertices to add the sinusoidal profile.
-    // After rotation, each vertex is of the form (x, 0, z). We now displace y based on z.
-    const positionAttribute = trackGeometry.attributes.position;
-    for (let i = 0; i < positionAttribute.count; i++) {
-        const z = positionAttribute.getZ(i);
-        const displacement = amplitude * Math.sin(frequency * z);
-        positionAttribute.setY(i, displacement);
+    // Compute the slope angle (in radians) such that tan(angle)=drop/length.
+    const slopeAngle = Math.atan(totalDrop / trackLength); // ≈0.1 rad
+
+    // Generate centerline points along the z axis (2D: x and z)
+    const centerPoints = [];
+    for (let i = 0; i < numPoints; i++) {
+        const t = i / (numPoints - 1);
+        const z = THREE.MathUtils.lerp(-trackLength / 2, trackLength / 2, t);
+        const x = amplitude * Math.sin(frequency * z);
+        centerPoints.push(new THREE.Vector2(x, z));
     }
-    positionAttribute.needsUpdate = true;
-    trackGeometry.computeVertexNormals();
-    
-    // Create the visual mesh
-    trackObjects.track = new THREE.Mesh(trackGeometry, new THREE.MeshPhongMaterial({ 
-        color: 0x666666, 
-        roughness: 0.8,
-    }));
-    trackObjects.track.receiveShadow = true;
-    scene.add(trackObjects.track);
-    
-    // -------------------------------
-    // Create physics ground using multiple segments that follow the sine curve
-    // -------------------------------
-    // We'll use trimesh for better approximation of the sinusoidal shape
-    // Define a grid of points for our trimesh
-    const trimeshResolution = {
-        x: 20,    // number of points across width
-        z: 2000    // number of points along length
+
+    // Calculate left and right boundaries using tangent and normal vectors
+    const leftPoints = [];
+    const rightPoints = [];
+    for (let i = 0; i < centerPoints.length; i++) {
+        const p = centerPoints[i];
+        let tangent;
+        if (i < centerPoints.length - 1) {
+            tangent = new THREE.Vector2(
+                centerPoints[i + 1].x - p.x, 
+                centerPoints[i + 1].y - p.y
+            );
+        } else {
+            tangent = new THREE.Vector2(
+                p.x - centerPoints[i - 1].x, 
+                p.y - centerPoints[i - 1].y
+            );
+        }
+        tangent.normalize();
+        // Normal vector is perpendicular to tangent.
+        const normal = new THREE.Vector2(-tangent.y, tangent.x);
+        // Offset boundaries by half the track width.
+        leftPoints.push(new THREE.Vector2(
+            p.x + normal.x * trackWidth / 2,
+            p.y + normal.y * trackWidth / 2
+        ));
+        rightPoints.push(new THREE.Vector2(
+            p.x - normal.x * trackWidth / 2,
+            p.y - normal.y * trackWidth / 2
+        ));
+    }
+
+    // Create a closed shape by traversing the left boundary and then the right in reverse.
+    const shape = new THREE.Shape();
+    shape.moveTo(leftPoints[0].x, leftPoints[0].y);
+    leftPoints.forEach(pt => shape.lineTo(pt.x, pt.y));
+    for (let i = rightPoints.length - 1; i >= 0; i--) {
+        shape.lineTo(rightPoints[i].x, rightPoints[i].y);
+    }
+    shape.closePath();
+
+    // Extrude the shape to create a 3D track.
+    // We set a depth of 1 (you can adjust if needed) and disable beveling.
+    const extrudeSettings = {
+        steps: 20,          // use more steps to get extra vertices for bumping
+        depth: 1,           // thickness of the track
+        bevelEnabled: false
     };
-    
-    // Create arrays to hold vertices and indices
-    const vertices = [];
-    const indices = [];
-    
-    // Add vertices
-    for (let iz = 0; iz <= trimeshResolution.z; iz++) {
-        for (let ix = 0; ix <= trimeshResolution.x; ix++) {
-            // Calculate position
-            const x = -halfWidth + ix * (width / trimeshResolution.x);
-            const z = -halfHeight + iz * (height / trimeshResolution.z);
-            
-            // Calculate height using sinusoidal function
-            const y = amplitude * Math.sin(frequency * z);
-            
-            // Add vertex
-            vertices.push(x, y, z);
+    const trackGeometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+    // ----- Add smooth bumps to the top surface -----
+    // In the extruded geometry, the original 2D shape was in the XY plane and was extruded along the Z axis.
+    // After extrusion, vertices with a z value close to the extrusion depth (here, 1) form the top surface.
+    // We’ll add a periodic offset to those vertices—but only gradually as they approach the top.
+    const bumpAmplitude = 1;      // maximum height of the bumps; adjust as desired
+    const bumpFrequency = 0.5;   // frequency of bumps along the road
+    const topThreshold = 0.95;    // vertices with z > topThreshold will receive bump offsets
+    const extrudeDepth = extrudeSettings.depth; // the maximum z value, here 1
+
+    const positions = trackGeometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+        const index = i * 3;
+        const zValue = positions.array[index + 2];
+        // Only modify vertices that are near the top surface.
+        if (zValue > topThreshold) {
+            // Compute a factor that ramps from 0 to 1 as zValue goes from topThreshold to extrudeDepth.
+            let t = (zValue - topThreshold) / (extrudeDepth - topThreshold);
+            // Apply a smoothstep function for a smoother transition.
+            t = t * t * (3 - 2 * t);
+            // Use the vertex's y coordinate (from the original 2D shape) to drive the bump pattern.
+            const bump = bumpAmplitude * t * Math.sin(bumpFrequency * positions.array[index + 1]);
+            positions.array[index + 2] += bump;
         }
     }
-    
-    // Add indices to create triangles
-    for (let iz = 0; iz < trimeshResolution.z; iz++) {
-        for (let ix = 0; ix < trimeshResolution.x; ix++) {
-            // Calculate indices of the 4 corners of a grid cell
-            const bottomLeft = iz * (trimeshResolution.x + 1) + ix;
-            const bottomRight = bottomLeft + 1;
-            const topLeft = (iz + 1) * (trimeshResolution.x + 1) + ix;
-            const topRight = topLeft + 1;
-            
-            // Add two triangles to form a quad
-            indices.push(bottomLeft, topLeft, bottomRight);
-            indices.push(bottomRight, topLeft, topRight);
-        }
+    positions.needsUpdate = true;
+// ----- End smooth bump modifications -----
+
+
+    const trackMaterial = new THREE.MeshPhongMaterial({ color: 0x666666, roughness: 0.8 });
+    const trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
+
+    // Originally the track is laid flat by rotating -π/2 about x.
+    // Now add an extra rotation of "slopeAngle" so that one end is higher.
+    trackMesh.rotation.x = -Math.PI / 2 + slopeAngle;
+    scene.add(trackMesh);
+    trackObjects.track = trackMesh;
+
+    // --- Physics ---
+    // Convert the extruded (and bumped) geometry into a Cannon-es Trimesh.
+    const vertices = Array.from(trackGeometry.attributes.position.array);
+    let indices = [];
+    if (trackGeometry.index) {
+        indices = Array.from(trackGeometry.index.array);
+    } else {
+        indices = [...Array(trackGeometry.attributes.position.count).keys()];
     }
-    
-    // Create the trimesh
-    const trimeshShape = new CANNON.Trimesh(vertices, indices);
-    const trimeshBody = new CANNON.Body({
-        mass: 0,
-        material: physicsWorld.groundMaterial
+    const trackShapePhysics = new CANNON.Trimesh(vertices, indices);
+
+    // Create a static physics body.
+    const trackBody = new CANNON.Body({
+        mass: 0, // static body
+        material: physicsWorld.groundMaterial,
     });
-    trimeshBody.addShape(trimeshShape);
-    physicsWorld.world.addBody(trimeshBody);
-    trackObjects.groundBodies = [trimeshBody]; // Store for potential access later
-    
-    // For backup, we'll also create a set of box segments that follow the curve more closely
-    // but we'll use many more segments for a smoother approximation
-    const segments = 200; // Doubled from 100 for smoother approximation
-    const segmentLength = height / segments;
-    const trackBodies = [];
-    
-    for (let i = 0; i < segments; i++) {
-        // Calculate z position of this segment
-        const zPos = -halfHeight + (i + 0.5) * segmentLength;
-        
-        // Calculate height (y) at this z position using sine function
-        const yPos = amplitude * Math.sin(frequency * zPos);
-        
-        // Calculate the rotation angle based on the derivative of sine function
-        const slopeDerivative = amplitude * frequency * Math.cos(frequency * zPos);
-        const angle = -Math.atan(slopeDerivative);
-        
-        // Create a box shape for this segment
-        // Use shorter segments for better curve following
-        const boxHeight = 0.2; // Thinner boxes overall
-        const segmentShape = new CANNON.Box(new CANNON.Vec3(halfWidth, boxHeight, segmentLength / 2));
-        
-        // Position correction for proper alignment with the sine curve
-        const yOffset = boxHeight * Math.cos(angle);
-        
-        // Create smaller box bodies with more overlap for smoother transitions
-        const segmentBody = new CANNON.Body({
-            mass: 0,
-            material: physicsWorld.groundMaterial,
-            position: new CANNON.Vec3(0, yPos - yOffset, zPos)
-        });
-        
-        // Set rotation to match the slope
-        const quaternion = new CANNON.Quaternion();
-        quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), angle);
-        segmentBody.quaternion.copy(quaternion);
-        
-        // Add the shape and the body to the world
-        segmentBody.addShape(segmentShape);
-        
-        // Add more overlap between segments
-        const overlapFactor = 1.1; // Consistent larger overlap
-        segmentShape.halfExtents.z = (segmentLength / 2) * overlapFactor;
-        
-        // Apply friction adjustment based on slope for better handling
-        const slopeSteepness = Math.abs(slopeDerivative);
-        if (slopeSteepness > 0.1) {
-            // Apply more friction on steeper segments to prevent sliding
-            segmentBody.material = new CANNON.Material({friction: 1.0});
-        }
-        
-        physicsWorld.world.addBody(segmentBody);
-        trackBodies.push(segmentBody);
-    }
-    
-    // Add the box bodies to our ground bodies array
-    trackObjects.groundBodies = trackObjects.groundBodies.concat(trackBodies);
-    
-    // -------------------------------
-    // Add sinusoidal walls to prevent falling off the track
-    // -------------------------------
-    // Create barriers that follow the sinusoidal shape
-    
-    // Number of wall segments to create for each side
-    const wallSegments = 30;
-    const wallSegmentLength = height / wallSegments;
-    
-    // Arrays to store the barrier bodies
-    const leftWallBodies = [];
-    const rightWallBodies = [];
-    
-    // Create segmented barriers that follow the sine curve
-    for (let i = 0; i < wallSegments; i++) {
-        // Calculate z position of this wall segment
-        const zPos = -halfHeight + (i + 0.5) * wallSegmentLength;
-        
-        // Calculate height (y) at this z position using sine function
-        const yPos = amplitude * Math.sin(frequency * zPos);
-        
-        // Calculate the rotation angle based on the sine curve slope
-        const nextZ = zPos + 0.01;
-        const nextY = amplitude * Math.sin(frequency * nextZ);
-        const angle = -Math.atan2(nextY - yPos, 0.01);
-        
-        // Create quaternion for rotation
-        const quaternion = new CANNON.Quaternion();
-        quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), angle);
-        
-        // Left wall segment
-        const leftWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1.5, wallSegmentLength / 2));
-        const leftWallBody = new CANNON.Body({
-            mass: 0,
-            shape: leftWallShape,
-            position: new CANNON.Vec3(-halfWidth - 0.5, yPos + 1.5, zPos)
-        });
-        leftWallBody.quaternion.copy(quaternion);
-        physicsWorld.world.addBody(leftWallBody);
-        leftWallBodies.push(leftWallBody);
-        
-        // Right wall segment
-        const rightWallShape = new CANNON.Box(new CANNON.Vec3(0.5, 1.5, wallSegmentLength / 2));
-        const rightWallBody = new CANNON.Body({
-            mass: 0,
-            shape: rightWallShape,
-            position: new CANNON.Vec3(halfWidth + 0.5, yPos + 1.5, zPos)
-        });
-        rightWallBody.quaternion.copy(quaternion);
-        physicsWorld.world.addBody(rightWallBody);
-        rightWallBodies.push(rightWallBody);
-        
-        // Create visual meshes for the wall segments
-        const wallMaterial = new THREE.MeshPhongMaterial({ color: 0xcccccc });
-        
-        // Left wall visual segment
-        const leftWallGeometry = new THREE.BoxGeometry(1, 3, wallSegmentLength);
-        const leftWall = new THREE.Mesh(leftWallGeometry, wallMaterial);
-        leftWall.position.copy(new THREE.Vector3(-halfWidth - 0.5, yPos + 1.5, zPos));
-        // Apply rotation
-        leftWall.quaternion.set(
-            quaternion.x,
-            quaternion.y,
-            quaternion.z,
-            quaternion.w
-        );
-        scene.add(leftWall);
-        trackObjects.barriers.push(leftWall);
-        
-        // Right wall visual segment
-        const rightWallGeometry = new THREE.BoxGeometry(1, 3, wallSegmentLength);
-        const rightWall = new THREE.Mesh(rightWallGeometry, wallMaterial);
-        rightWall.position.copy(new THREE.Vector3(halfWidth + 0.5, yPos + 1.5, zPos));
-        // Apply rotation
-        rightWall.quaternion.set(
-            quaternion.x,
-            quaternion.y,
-            quaternion.z,
-            quaternion.w
-        );
-        scene.add(rightWall);
-        trackObjects.barriers.push(rightWall);
-    }
-    
-    // -------------------------------
-    // Create start line
-    // -------------------------------
-    const startLinePosition = new THREE.Vector3(0, 0.01, 14);
-    const startGeometry = new THREE.PlaneGeometry(width, 1);
-    trackObjects.startLine = new THREE.Mesh(startGeometry, new THREE.MeshPhongMaterial({ color: 0x00ff00 }));
-    trackObjects.startLine.rotation.x = -Math.PI / 2;
-    
-    // Adjust the y position of the start line to match the sine curve
-    const startLineZ = startLinePosition.z;
-    const startLineY = amplitude * Math.sin(frequency * startLineZ) + 0.01;
-    startLinePosition.y = startLineY;
-    
-    trackObjects.startLine.position.copy(startLinePosition);
-    scene.add(trackObjects.startLine);
-    
-    // Adjust the starting position y-coordinate to match the sine curve
-    trackInfo.startPosition.y = startLineY + 0.5; // Add a small offset for the car height
-    
-    console.log("Sinusoidal track start line position:", startLinePosition.x, startLinePosition.y, startLinePosition.z);
-    console.log("Sinusoidal track start position:", trackInfo.startPosition.x, trackInfo.startPosition.y, trackInfo.startPosition.z);
-    
-    // -------------------------------
-    // Add directional markings on track to show direction
-    // -------------------------------
-    const arrowGeometry = new THREE.PlaneGeometry(5, 2);
-    const arrowMaterial = new THREE.MeshPhongMaterial({ color: 0xffffff });
-    
-    for (let z = 20; z >= -40; z -= 10) {
-        const arrow = new THREE.Mesh(arrowGeometry, arrowMaterial);
-        arrow.rotation.x = -Math.PI / 2;
-        arrow.rotation.z = Math.PI; // Point in the forward direction
-        
-        // Position the arrow on the sine curve
-        const arrowY = amplitude * Math.sin(frequency * z) + 0.02;
-        arrow.position.set(0, arrowY, z);
-        
-        // Calculate the rotation to match the slope
-        const nextZ = z + 0.1;
-        const nextY = amplitude * Math.sin(frequency * nextZ);
-        const angle = Math.atan2(nextY - arrowY, 0.1);
-        arrow.rotation.x = -Math.PI/2 + angle;
-        
-        scene.add(arrow);
-        trackObjects.boundaries.push(arrow);
-    }
+
+    // Instead of setting the body's quaternion after adding the shape,
+    // add the shape with the rotation already applied.
+    const shapeOrientation = new CANNON.Quaternion();
+    shapeOrientation.setFromEuler(-Math.PI / 2 + slopeAngle, 0, 0);
+    trackBody.addShape(trackShapePhysics, new CANNON.Vec3(), shapeOrientation);
+
+    // Add the body to the physics world.
+    physicsWorld.world.addBody(trackBody);
+
+    console.log("Downhill sinus track with bumps created.");
 }

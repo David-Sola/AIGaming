@@ -51,7 +51,7 @@ export class VehicleVisual {
             this.meshes.chassis = gltf.scene;
             
             // Scale the model to match physics dimensions (adjust these values based on your model)
-            this.meshes.chassis.scale.set(0.15, 0.2, 0.15);
+            this.meshes.chassis.scale.set(0.12, 0.22, 0.15);
             
             // Store the model's original rotation as its base orientation
             // This will be used in the update method
@@ -96,15 +96,15 @@ export class VehicleVisual {
     createWheels() {
         // CRITICAL FIX: Create better wheel visualization
         // Create a wheel geometry that clearly shows rotation direction
-        const wheelRadius = 0.5;
-        const wheelThickness = 0.4;
+        const wheelRadius = 0.00;
+        const wheelThickness = 0.0000;
         
         // Create wheel geometry
         const wheelGeometry = new THREE.CylinderGeometry(
             wheelRadius,     // top radius
             wheelRadius,     // bottom radius
             wheelThickness,  // height
-            24,              // radial segments
+            1,              // radial segments
             1,               // height segments
             false            // open-ended
         );

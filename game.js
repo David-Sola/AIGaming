@@ -156,7 +156,7 @@ directionalLight.position.set(10, 10, 10);
 scene.add(directionalLight);
 
 // Create a perspective camera
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 3, 1000);
 const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas'), antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
@@ -183,38 +183,41 @@ function resetCar(position = tracks.straight.startPosition, rotation = tracks.st
     
     console.log("RESETTING CAR to position:", position.x, position.y, position.z);
     
-    // CRITICAL FIX: First fully stop the vehicle
+    // First fully stop the vehicle
     vehicle.accelerate(0);
-    vehicle.brake(vehicle.maxBrakeForce); // Apply full brakes first to stop momentum
+    vehicle.brake(vehicle.maxBrakeForce);
     
     // Wait a short time to let the brakes take effect
     setTimeout(() => {
-        // CRITICAL FIX: Do a complete physics step with the vehicle stopped
+        // Do a complete physics step with the vehicle stopped
         physicsWorld.update(1/60);
         
-        // CRITICAL FIX: Explicitly stop the chassis body with direct velocity zeroing
+        // Explicitly stop the chassis body with direct velocity zeroing
         vehicle.chassisBody.velocity.setZero();
         vehicle.chassisBody.angularVelocity.setZero();
         vehicle.chassisBody.force.setZero();
         vehicle.chassisBody.torque.setZero();
         
-        // Use the track's defined position Y value, which is dynamically adjusted
-        // when the track is created to match the corresponding height on the curve
-        const cannonPosition = new CANNON.Vec3(position.x, position.y + 1.0, position.z);
+        // Ensure starting well above the track surface to avoid clipping
+        const cannonPosition = new CANNON.Vec3(
+            position.x,
+            position.y + 2.0, // Increased clearance to ensure vehicle is above track
+            position.z
+        );
         const cannonQuaternion = new CANNON.Quaternion();
         cannonQuaternion.setFromAxisAngle(new CANNON.Vec3(0, 1, 0), rotation);
         
-        // CRITICAL FIX: Directly set position before reset for better control
+        // Directly set position before reset for better control
         vehicle.chassisBody.position.copy(cannonPosition);
         vehicle.chassisBody.quaternion.copy(cannonQuaternion);
         
         // Now do the full reset
         vehicle.reset(cannonPosition, cannonQuaternion);
         
-        // CRITICAL FIX: Reset wheel forces individually again
+        // Reset wheel forces individually
         for (let i = 0; i < 4; i++) {
             vehicle.applyEngineForce(0, i);
-            vehicle.setBrake(vehicle.maxBrakeForce * 0.2, i); // Light braking on all wheels
+            vehicle.setBrake(0, i); // No brake force initially to let vehicle settle naturally
         }
         
         // Update visuals
@@ -230,21 +233,21 @@ function resetCar(position = tracks.straight.startPosition, rotation = tracks.st
         );
         camera.lookAt(carPosition.x, carPosition.y, carPosition.z);
         
-        // Do a few physics steps to stabilize the vehicle
-        for (let i = 0; i < 5; i++) {
+        // Do more physics steps to allow the vehicle to settle onto the track
+        for (let i = 0; i < 15; i++) {
             physicsWorld.update(1/60);
             vehicle.update();
         }
         
-        // Release brakes slightly after reset
+        // After settling, apply a very light brake to keep from rolling
         setTimeout(() => {
-            vehicle.brake(vehicle.maxBrakeForce * 0.1); // Light braking to prevent rolling
+            vehicle.brake(vehicle.maxBrakeForce * 0.02); // Very light braking
             vehicle.isResetting = false;
             console.log("Reset complete, vehicle at:", 
                     vehicle.chassisBody.position.x.toFixed(2),
                     vehicle.chassisBody.position.y.toFixed(2),
                     vehicle.chassisBody.position.z.toFixed(2));
-        }, 100);
+        }, 200); // Increased from 100ms to 200ms for better settling
     }, 100);
 }
 
@@ -386,23 +389,16 @@ function updateVehicle() {
     // With negative Z being forward, vehicle is moving forward if Z velocity is negative
     const isMovingForward = velocity.z < 0;
     
-    // CRITICAL FIX: Apply much stronger and more immediate force
+    // CRITICAL FIX: Apply smoother initial force to avoid jitters
     if (accelerate) {
-        // CRITICAL FIX: Use a strong initial impulse when the car is not moving
         if (currentSpeed < 0.1) {
-            // Apply a strong direct impulse to get the car moving
-            vehicle.chassisBody.applyImpulse(
-                new CANNON.Vec3(0, 0, -vehicle.maxForce * 0.1), // Impulse in negative Z (forward)
-                new CANNON.Vec3(0, 0, 0) // At center of mass
-            );
+            // Apply gradual acceleration to prevent jitter at start
+            vehicle.accelerate(vehicle.maxForce * 200); // Start gently
             
-            // Also apply full engine force
-            vehicle.accelerate(vehicle.maxForce * 1.5); // 150% force for initial movement
-            
-            console.log("APPLIED IMPULSE TO START MOVING");
+            console.log("Gradual acceleration applied.");
         } else {
             // Normal acceleration when already moving
-            const forceMultiplier = Math.max(0.5, Math.min(2.0, 5.0 / currentSpeed));
+            const forceMultiplier = Math.max(2, Math.min(2.0, 5.0 / currentSpeed));
             vehicle.accelerate(vehicle.maxForce * forceMultiplier);
         }
         
@@ -498,14 +494,16 @@ function updateVehicle() {
     const isFlipped = carUp.dot(upVec) < -0.5;
     
     // Only reset in severe conditions
-    if (position.y < -5 || Math.abs(position.x) > 50 || 
-        Math.abs(position.z) > 50 || isFlipped) {
+    // Increased boundaries to match the track's sinusoidal amplitude
+    if (position.y < -10 || Math.abs(position.x) > 150 || 
+        Math.abs(position.z) > 550 || isFlipped) {
         resetCar(currentTrack.startPosition, currentTrack.startRotation);
     }
     
     // Update camera
     updateCamera();
 }
+
 
 // New helper functions
 function checkVehicleStatus() {
@@ -530,11 +528,12 @@ function checkVehicleStatus() {
     }
     
     // Check if car has fallen off the track or flipped over
-    if (position.y < -5 || // Fallen below the track
-        Math.abs(position.x) > 30 || // Gone too far sideways
-        Math.abs(position.z) > 100 || // Gone too far forward/backward
+    // Increased boundaries to better match the track's sinusoidal amplitude
+    if (position.y < -10 || // Fallen below the track
+        Math.abs(position.x) > 150 || // Gone too far sideways (increased for sinusoidal track)
+        Math.abs(position.z) > 550 || // Gone too far forward/backward (increased for track length)
         isFlipped || // Car is flipped over
-        vehicle.chassisBody.angularVelocity.length() > 20) { // Spinning too fast
+        vehicle.chassisBody.angularVelocity.length() > 25) { // Increased threshold for spinning
         
         // Reset the car
         resetCar(currentTrack.startPosition, currentTrack.startRotation);
@@ -565,14 +564,14 @@ function updateCamera() {
     // Position camera behind car
     camera.position.set(
         carPosition.x - carDirection.x * 8 * distanceFactor,
-        carPosition.y + 3.5,
+        carPosition.y + 7.5,
         carPosition.z - carDirection.z * 8 * distanceFactor
     );
     
     // Look slightly ahead of car for better visibility
     camera.lookAt(
         carPosition.x + carDirection.x * 5,
-        carPosition.y + 1,
+        carPosition.y + 1.5,
         carPosition.z + carDirection.z * 5
     );
 }
