@@ -132,4 +132,6 @@ Next Steps
 
 This stack and GDD give you a clear, achievable path to build your TrackMania-inspired game. Let me know if you’d like help with code snippets or further details! Good luck coding!
 
-Implenetation plan: 
+
+3d models:
+R8: https://sketchfab.com/3d-models/audi-r8-e17e438f076f4427a58d93aa779edaed#download
